@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 from collections import Counter, defaultdict
 from pathlib import Path
+from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -217,8 +218,9 @@ def demo():
     after["tracks"]["children"][0]["kind"] = "Audio"
     notes = request(0, 1, [
         ("entire-old", 0, 20), ("repeat-choice", 4, None), ("old-gap", 14, 16),
-        ("cut-frame", 10, None), ("split-across-new-cuts", 5, 8),
-    ], choices=[dict(note_id="repeat-choice", piece=0, clip=3)])
+        ("cut-frame", 10, None), ("split-across-new-cuts", 3, 6),
+    ], choices=[dict(note_id="repeat-choice", piece=0, clip=3),
+                dict(note_id="split-across-new-cuts", piece=1, clip=1)])
     return before, after, notes
 
 
@@ -231,6 +233,7 @@ def verify_demo(directory, otio):
     status = verify_report(before, after, notes, first)
     assert set(status) == {"ambiguous", "unique", "deleted", "gap"}
     assert first["held"] == ["entire-old", "old-gap"]
+    assert len(first["transfers"]) == 5
     assert invoke("apply", [*paths, output]) == first
     verify_export(after, notes, first, output, otio)
     contents = output.read_bytes()
@@ -282,11 +285,22 @@ def verify_generated(directory):
     return total
 
 
-def verify_real(directory, otio):
+def fetch_fixture():
     source = Request(FIXTURE, headers={"User-Agent": "MoonReConform-verification/0.1"})
-    with urlopen(source, timeout=30) as response:
-        data = response.read(16_000_001)
-    assert hashlib.sha256(data).hexdigest() == SHA256
+    for attempt in range(3):
+        try:
+            with urlopen(source, timeout=10) as response:
+                data = response.read(16_000_001)
+        except (OSError, URLError):
+            if attempt == 2:
+                raise
+        else:
+            assert hashlib.sha256(data).hexdigest() == SHA256, "pinned ElFuente fixture hash mismatch"
+            return data
+
+
+def verify_real(directory, otio):
+    data = fetch_fixture()
     before = json.loads(data)
     source_clips = track(before)["children"]
     assert len(source_clips) == 5 and len(frames(before, 0)) == 1430
