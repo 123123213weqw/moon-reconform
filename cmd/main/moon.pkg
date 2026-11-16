@@ -1,0 +1,9 @@
+supported_targets = "js"
+
+import {
+  "123123213weqw/moon_reconform" @core,
+  "moonbitlang/core/env",
+  "moonbitlang/core/json",
+}
+
+pkgtype(kind: "executable")
