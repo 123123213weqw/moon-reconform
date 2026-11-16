@@ -1,5 +1,3 @@
-_build/
-.mooncakes/
-*.pyc
-__pycache__/
-
+/_build/
+/.mooncakes/
+/scripts/__pycache__/
