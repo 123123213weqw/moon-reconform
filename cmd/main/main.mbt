@@ -103,8 +103,13 @@ fn main {
     println(@core.report_json(before, after, reports, resolution).stringify())
   } catch {
     error => {
+      let message = match error {
+        @core.Invalid(reason) => reason
+        @core.Limit(reason) => reason
+        _ => error.to_string()
+      }
       println(
-        Json::object({ "ok": Json(false), "error": Json(error.to_string()) }).stringify(),
+        Json::object({ "ok": Json(false), "error": Json(message) }).stringify(),
       )
       exit_status(1)
     }
