@@ -1,0 +1,235 @@
+///|
+fn object(
+  value : Json,
+  context : String,
+) -> Map[String, Json] raise ReconformError {
+  guard value is Object(fields) else {
+    raise Invalid(context + ": expected an object")
+  }
+  fields
+}
+
+///|
+fn array(value : Json, context : String) -> Array[Json] raise ReconformError {
+  guard value is Array(items) else {
+    raise Invalid(context + ": expected an array")
+  }
+  items
+}
+
+///|
+fn required(
+  fields : Map[String, Json],
+  key : String,
+  context : String,
+) -> Json raise ReconformError {
+  guard fields.get(key) is Some(value) else {
+    raise Invalid(context + ": missing " + key)
+  }
+  value
+}
+
+///|
+fn string(value : Json, context : String) -> String raise ReconformError {
+  guard value is String(content) else {
+    raise Invalid(context + ": expected a string")
+  }
+  content
+}
+
+///|
+fn field_string(
+  fields : Map[String, Json],
+  key : String,
+  context : String,
+) -> String raise ReconformError {
+  string(required(fields, key, context), context + "." + key)
+}
+
+///|
+fn expect_schema(
+  fields : Map[String, Json],
+  schema : String,
+  context : String,
+) -> Unit raise ReconformError {
+  if field_string(fields, "OTIO_SCHEMA", context) != schema {
+    raise Invalid(context + ": expected " + schema)
+  }
+}
+
+///|
+fn exact_integer(value : Json, context : String) -> Int64 raise ReconformError {
+  guard value is Number(n, ..) else {
+    raise Invalid(context + ": expected a nonnegative exact integer")
+  }
+  if !(n >= 0.0 && n <= max_frames.to_double() && n == n.floor()) {
+    raise Invalid(context + ": expected a nonnegative exact integer")
+  }
+  n.to_int64()
+}
+
+///|
+fn exact_time(
+  value : Json,
+  fps : Int32,
+  context : String,
+) -> Int64 raise ReconformError {
+  let fields = object(value, context)
+  expect_schema(fields, "RationalTime.1", context)
+  if exact_integer(required(fields, "rate", context), context + ".rate") !=
+    fps.to_int64() {
+    raise Invalid(
+      context + ": RationalTime rate differs from the requested integer fps",
+    )
+  }
+  exact_integer(required(fields, "value", context), context + ".value")
+}
+
+///|
+fn source_range(
+  value : Json,
+  fps : Int32,
+  context : String,
+) -> Span raise ReconformError {
+  let fields = object(value, context)
+  expect_schema(fields, "TimeRange.1", context)
+  let start = exact_time(
+    required(fields, "start_time", context),
+    fps,
+    context + ".start_time",
+  )
+  let duration = exact_time(
+    required(fields, "duration", context),
+    fps,
+    context + ".duration",
+  )
+  let span = { start, stop: add_frames(start, duration), }
+  span.checked(context)
+  span
+}
+
+///|
+fn reject_effects(
+  fields : Map[String, Json],
+  context : String,
+) -> Unit raise ReconformError {
+  if fields.get("effects") is Some(value) &&
+    array(value, context + ".effects").length() > 0 {
+    raise Invalid(
+      context + ": effects and retiming are outside the supported format",
+    )
+  }
+}
+
+///|
+fn untrimmed(
+  fields : Map[String, Json],
+  context : String,
+) -> Unit raise ReconformError {
+  match fields.get("source_range") {
+    None | Some(Null) => ()
+    Some(_) =>
+      raise Invalid(
+        context + ": source_range trims a containing track or stack",
+      )
+  }
+  reject_effects(fields, context)
+}
+
+///|
+fn otio_track(
+  root : Json,
+  track_index : Int32,
+) -> Map[String, Json] raise ReconformError {
+  let timeline = object(root, "timeline")
+  expect_schema(timeline, "Timeline.1", "timeline")
+  let stack = object(required(timeline, "tracks", "timeline"), "tracks")
+  expect_schema(stack, "Stack.1", "tracks")
+  untrimmed(stack, "tracks")
+  let tracks = array(required(stack, "children", "tracks"), "tracks.children")
+  guard tracks.get(track_index) is Some(value) else {
+    raise Invalid("track index is outside the stack")
+  }
+  let track = object(value, "selected track")
+  expect_schema(track, "Track.1", "selected track")
+  if field_string(track, "kind", "selected track") != "Video" {
+    raise Invalid("selected track must be Video")
+  }
+  untrimmed(track, "selected track")
+  track
+}
+
+///|
+fn media_reference(
+  clip : Map[String, Json],
+  schema : String,
+  context : String,
+) -> Map[String, Json] raise ReconformError {
+  let value = if schema == "Clip.1" {
+    required(clip, "media_reference", context)
+  } else {
+    let references = object(
+      required(clip, "media_references", context),
+      context + ".media_references",
+    )
+    let key = field_string(clip, "active_media_reference_key", context)
+    required(references, key, context + ".media_references")
+  }
+  let reference = object(value, context + ".media_reference")
+  expect_schema(reference, "ExternalReference.1", context + ".media_reference")
+  reference
+}
+
+///|
+/// Read one untrimmed hard-cut Video track from a Timeline.1.
+pub fn read_otio(
+  root : Json,
+  track_index~ : Int32,
+  fps~ : Int32,
+) -> Timeline raise ReconformError {
+  if fps <= 0 || fps > 240 {
+    raise Invalid("fps must be between 1 and 240")
+  }
+  let track = otio_track(root, track_index)
+  let children = array(
+    required(track, "children", "selected track"),
+    "track.children",
+  )
+  if children.length() > 20000 {
+    raise Limit("too many shots; limit is 20000")
+  }
+  let shots = []
+  for i, value in children {
+    let context = "track child " + i.to_string()
+    let child = object(value, context)
+    let schema = field_string(child, "OTIO_SCHEMA", context)
+    reject_effects(child, context)
+    let shot = match schema {
+      "Clip.1" | "Clip.2" => {
+        let reference = media_reference(child, schema, context)
+        let url = field_string(
+          reference,
+          "target_url",
+          context + ".media_reference",
+        )
+        let range = match required(child, "source_range", context) {
+          Null =>
+            required(reference, "available_range", context + ".media_reference")
+          range => range
+        }
+        Clip(url, source_range(range, fps, context + ".source_range"))
+      }
+      "Gap.1" =>
+        Gap(
+          source_range(
+            required(child, "source_range", context),
+            fps,
+            context + ".source_range",
+          ).length(),
+        )
+      _ => raise Invalid(context + ": unsupported schema " + schema)
+    }
+    shots.push(shot)
+  }
+  Timeline::from_shots(shots)
+}
