@@ -3,7 +3,7 @@ supported_targets = "js"
 import {
   "123123213weqw/moon_reconform" @core,
   "moonbitlang/core/env",
-  "moonbitlang/core/json",
+  "white-bear233/moontimeline/otiojson" @codec,
 }
 
 pkgtype(kind: "executable")

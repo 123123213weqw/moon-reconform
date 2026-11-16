@@ -28,20 +28,46 @@ extern "js" fn exit_status(code : Int32) -> Unit =
   #| code => { process.exitCode = code; }
 
 ///|
+extern "js" fn write_new(path : String, content : String) -> String? =
+  #| (path, content) => {
+  #|   const fs = process.getBuiltinModule("node:fs");
+  #|   const p = process.getBuiltinModule("node:path");
+  #|   let dir, temp;
+  #|   try {
+  #|     const target = p.resolve(path);
+  #|     dir = fs.mkdtempSync(p.join(p.dirname(target), ".moon-reconform-"));
+  #|     temp = p.join(dir, "timeline.otio");
+  #|     fs.writeFileSync(temp, content + "\n", { flag: "wx" });
+  #|     fs.linkSync(temp, target);
+  #|     return undefined;
+  #|   } catch (err) {
+  #|     return "cannot create OTIO output (" + (err.code || "write failed") + "): " + path;
+  #|   } finally {
+  #|     if (temp) { try { fs.unlinkSync(temp); } catch {} }
+  #|     if (dir) { try { fs.rmdirSync(dir); } catch {} }
+  #|   }
+  #| }
+
+///|
 fn read_json(path : String) -> Json raise {
   guard read_input(path) is Some(text) else {
     fail("cannot read a regular UTF-8 input file of at most 16 MB: " + path)
   }
-  @json.parse(text)
+  match @codec.parse(text) {
+    Ok(value) => value
+    Err(error) => fail(path + ": " + error)
+  }
 }
 
 ///|
 fn main {
   try {
     let args = @env.args()
-    if args.length() != 6 || args[2] != "plan" {
+    let planning = args.length() == 6 && args[2] == "plan"
+    let applying = args.length() == 7 && args[2] == "apply"
+    if !planning && !applying {
       fail(
-        "usage: moon run cmd/main --target js -- plan old.otio new.otio notes.json",
+        "usage: plan old.otio new.otio request.json | apply old.otio new.otio request.json output.otio",
       )
     }
     let old_json = read_json(args[3])
@@ -59,6 +85,21 @@ fn main {
     )
     let reports = @core.plan(before, after, request.notes)
     let resolution = @core.resolve(reports, request.selections)
+    if applying {
+      let exported = @core.with_markers(
+        new_json,
+        track_index=request.new_track,
+        fps=request.fps,
+        resolution,
+      )
+      let content = match @codec.stringify(exported) {
+        Ok(value) => value
+        Err(error) => fail("cannot encode OTIO output: " + error)
+      }
+      if write_new(args[6], content) is Some(error) {
+        fail(error)
+      }
+    }
     println(@core.report_json(before, after, reports, resolution).stringify())
   } catch {
     error => {

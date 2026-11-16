@@ -1,0 +1,105 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "123123213weqw/moon_reconform"
+
+import {
+  "moonbitlang/core/json",
+}
+
+// Values
+pub fn plan(Timeline, Timeline, Array[Note]) -> Array[NoteReport] raise ReconformError
+
+pub fn read_otio(@json.Json, track_index~ : Int32, fps~ : Int32) -> Timeline raise ReconformError
+
+pub fn read_request(@json.Json) -> Request raise ReconformError
+
+pub fn report_json(Timeline, Timeline, Array[NoteReport], Resolution) -> @json.Json
+
+pub fn resolve(Array[NoteReport], Array[Selection]) -> Resolution raise ReconformError
+
+pub fn with_markers(@json.Json, track_index~ : Int32, fps~ : Int32, Resolution) -> @json.Json raise ReconformError
+
+// Errors
+pub(all) suberror ReconformError {
+  Invalid(String)
+  Limit(String)
+}
+
+// Types and methods
+pub(all) struct Note {
+  id : String
+  text : String
+  range : Span
+}
+
+pub(all) struct NoteReport {
+  note : Note
+  pieces : Array[Piece]
+}
+
+pub(all) struct Piece {
+  old : Span
+  media : String?
+  source : Span?
+  candidates : Array[Placement]
+  kind : PieceKind
+}
+
+pub(all) enum PieceKind {
+  Unique
+  Ambiguous
+  Deleted
+  GapPiece
+}
+
+pub(all) struct Placement {
+  clip : Int32
+  range : Span
+}
+
+pub(all) struct Request {
+  fps : Int32
+  old_track : Int32
+  new_track : Int32
+  notes : Array[Note]
+  selections : Array[Selection]
+}
+
+pub(all) struct Resolution {
+  transfers : Array[Transfer]
+  held : Array[String]
+}
+
+pub(all) struct Selection {
+  note_id : String
+  piece : Int32
+  clip : Int32
+}
+
+pub(all) enum Shot {
+  Clip(String, Span)
+  Gap(Int64)
+}
+
+pub(all) struct Span {
+  start : Int64
+  stop : Int64
+}
+pub fn Span::length(Self) -> Int64
+
+pub struct Timeline {
+  // private fields
+}
+pub fn Timeline::duration(Self) -> Int64
+pub fn Timeline::from_shots(Array[Shot]) -> Self raise ReconformError
+pub fn Timeline::shot_count(Self) -> Int32
+
+pub(all) struct Transfer {
+  note_id : String
+  text : String
+  piece : Int32
+  placement : Placement
+}
+
+// Type aliases
+
+// Traits

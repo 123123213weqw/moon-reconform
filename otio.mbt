@@ -59,13 +59,61 @@ fn expect_schema(
 
 ///|
 fn exact_integer(value : Json, context : String) -> Int64 raise ReconformError {
-  guard value is Number(n, ..) else {
+  guard value is Number(n, repr~) else {
     raise Invalid(context + ": expected a nonnegative exact integer")
   }
-  if !(n >= 0.0 && n <= max_frames.to_double() && n == n.floor()) {
+  if !(n >= 0.0 && n <= max_frames.to_double() && n == n.floor()) ||
+    (repr is Some(token) && !integral_token(token, is_zero=n == 0.0)) {
     raise Invalid(context + ": expected a nonnegative exact integer")
   }
   n.to_int64()
+}
+
+///|
+// The lossless codec preserves numeric token text. A decimal smaller than
+// one binary64 ULP must still be rejected if its original value is fractional.
+fn integral_token(token : String, is_zero~ : Bool) -> Bool {
+  let mut decimal = false
+  let mut exponent = false
+  let mut exponent_negative = false
+  let mut magnitude = 0L
+  let mut fractional = 0L
+  let mut trailing_zeroes = 0L
+  let mut nonzero = false
+  for digit in token {
+    match digit {
+      'e' | 'E' => exponent = true
+      '.' => decimal = true
+      '-' if exponent => exponent_negative = true
+      '-' | '+' => ()
+      '0'..<='9' =>
+        if exponent {
+          if magnitude <= token.length().to_int64() {
+            magnitude = magnitude * 10L +
+              (digit.to_int() - '0'.to_int()).to_int64()
+          }
+        } else {
+          if decimal {
+            fractional += 1L
+          }
+          if digit == '0' {
+            trailing_zeroes += 1L
+          } else {
+            trailing_zeroes = 0L
+            nonzero = true
+          }
+        }
+      _ => return false
+    }
+  }
+  if !nonzero {
+    return true
+  }
+  if is_zero {
+    return false
+  }
+  let shift = if exponent_negative { -magnitude } else { magnitude }
+  shift + trailing_zeroes >= fractional
 }
 
 ///|
@@ -113,6 +161,10 @@ fn reject_effects(
   fields : Map[String, Json],
   context : String,
 ) -> Unit raise ReconformError {
+  match fields.get("enabled") {
+    None | Some(True) => ()
+    _ => raise Invalid(context + ": expected an enabled OTIO item")
+  }
   if fields.get("effects") is Some(value) &&
     array(value, context + ".effects").length() > 0 {
     raise Invalid(
