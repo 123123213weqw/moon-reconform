@@ -14,7 +14,7 @@ fn source_span(shot : LocatedShot) -> Span {
 
 ///|
 fn index_sources(timeline : Timeline) -> Map[String, SourceGroup] {
-  let pending : Map[String, Array[LocatedShot]] = {}
+  let pending : Map[String, Array[LocatedShot]] = Map([])
   for shot in timeline.shots {
     if shot.media is Some(key) {
       match pending.get(key) {
@@ -23,7 +23,7 @@ fn index_sources(timeline : Timeline) -> Map[String, SourceGroup] {
       }
     }
   }
-  let index : Map[String, SourceGroup] = {}
+  let index : Map[String, SourceGroup] = Map([])
   for key, shots in pending {
     shots.sort_by((a, b) => {
       let order = source_span(a).start.compare(source_span(b).start)
