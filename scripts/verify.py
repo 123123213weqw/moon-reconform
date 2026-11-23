@@ -262,6 +262,17 @@ def verify_demo(directory, otio):
     bad_choice["selections"][0]["clip"] = 2
     write(paths[2], bad_choice)
     invoke("plan", paths, "not a candidate")
+    write(paths[2], notes)
+    # A misspelled key is refused at each level instead of narrowing the request.
+    misspelled = copy.deepcopy(notes)
+    misspelled["selectons"] = []
+    write(paths[2], misspelled)
+    invoke("plan", paths, "request: unknown field selectons")
+    narrowed = copy.deepcopy(notes)
+    narrowed["notes"][0]["end"] = narrowed["notes"][0].pop("stop")
+    write(paths[2], narrowed)
+    invoke("plan", paths, "annotation entire-old: unknown field end")
+    write(paths[2], notes)
     return status
 
 

@@ -30,8 +30,25 @@ fn index_field(
 }
 
 ///|
+/// The request is the reviewer's own input, so a misspelled key must fail
+/// instead of silently narrowing what the tool reads. OTIO documents keep
+/// their unknown fields; only the request is held to this rule.
+fn fields_only(
+  fields : Map[String, Json],
+  allowed : Array[String],
+  context : String,
+) -> Unit raise ReconformError {
+  for key, _ in fields {
+    if !allowed.contains(key) {
+      raise Invalid(context + ": unknown field " + key)
+    }
+  }
+}
+
+///|
 pub fn read_request(value : Json) -> Request raise ReconformError {
   let fields = object(value, "request")
+  fields_only(fields, ["fps", "old_track", "new_track", "notes", "selections"], "request")
   let fps = index_field(fields, "fps", "request")
   let old_track = index_field(fields, "old_track", "request")
   let new_track = index_field(fields, "new_track", "request")
@@ -43,6 +60,7 @@ pub fn read_request(value : Json) -> Request raise ReconformError {
   for value in input {
     let note = object(value, "annotation")
     let id = field_string(note, "id", "annotation")
+    fields_only(note, ["id", "text", "start", "stop"], "annotation " + id)
     let text = field_string(note, "text", "annotation")
     let start = integer_field(note, "start", id)
     let stop = match note.get("stop") {
@@ -59,6 +77,7 @@ pub fn read_request(value : Json) -> Request raise ReconformError {
     }
     for value in input {
       let selection = object(value, "selection")
+      fields_only(selection, ["note_id", "piece", "clip"], "selection")
       selections.push({
         note_id: field_string(selection, "note_id", "selection"),
         piece: index_field(selection, "piece", "selection"),

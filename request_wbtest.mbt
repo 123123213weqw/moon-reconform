@@ -1,0 +1,79 @@
+///|
+fn base_request() -> Map[String, Json] {
+  {
+    "fps": Json::number(24.0),
+    "old_track": Json::number(0.0),
+    "new_track": Json::number(0.0),
+    "notes": Json::array([]),
+  }
+}
+
+///|
+fn request_error(request : Map[String, Json]) -> String {
+  let outcome = Ok(read_request(Json::object(request))) catch {
+    error => Err(error)
+  }
+  match outcome {
+    Err(Invalid(message)) => message
+    _ => "no error raised"
+  }
+}
+
+///|
+fn note_object(note : Map[String, Json]) -> Json {
+  Json::object(note)
+}
+
+///|
+test "request rejects unknown fields by name at every level" {
+  // A misspelled key used to be skipped, which narrowed what the tool
+  // read: "end" in place of "stop" turned a range into a single frame.
+  let misspelled = base_request()
+  misspelled["selectons"] = Json::array([])
+  assert_eq(request_error(misspelled), "request: unknown field selectons")
+
+  let narrowed = base_request()
+  narrowed["notes"] = Json::array([
+    note_object({
+      "id": Json("n1"),
+      "text": Json("check the cut-in"),
+      "start": Json::number(4.0),
+      "end": Json::number(6.0),
+    }),
+  ])
+  assert_eq(request_error(narrowed), "annotation n1: unknown field end")
+
+  let selection = base_request()
+  selection["notes"] = Json::array([
+    note_object({ "id": Json("n1"), "text": Json("t"), "start": Json::number(4.0) }),
+  ])
+  selection["selections"] = Json::array([
+    Json::object({
+      "note_id": Json("n1"),
+      "piece": Json::number(0.0),
+      "clips": Json::number(3.0),
+    }),
+  ])
+  assert_eq(request_error(selection), "selection: unknown field clips")
+}
+
+///|
+test "request keeps the documented shapes" {
+  let request = base_request()
+  request["notes"] = Json::array([
+    note_object({ "id": Json("n1"), "text": Json("t"), "start": Json::number(4.0) }),
+    note_object({
+      "id": Json("n2"),
+      "text": Json("t"),
+      "start": Json::number(3.0),
+      "stop": Json::number(6.0),
+    }),
+  ])
+  let parsed = read_request(Json::object(request))
+  assert_eq(parsed.fps, 24)
+  assert_eq(parsed.notes.length(), 2)
+  // An omitted stop is one frame; an explicit stop is exclusive.
+  assert_eq(parsed.notes[0].range.stop, 5L)
+  assert_eq(parsed.notes[1].range.length(), 3L)
+  assert_eq(parsed.selections.length(), 0)
+}
