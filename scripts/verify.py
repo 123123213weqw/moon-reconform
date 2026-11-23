@@ -277,6 +277,14 @@ def verify_export(after, notes, report, output, otio=None, imported=()):
             assert actual.name == raw["name"]
             assert actual.marked_range.start_time.value == raw["marked_range"]["start_time"]["value"]
             assert actual.marked_range.duration.value == raw["marked_range"]["duration"]["value"]
+            # The official library hands back the footage the marker records,
+            # which is what a later round reads it by.
+            origin, written_origin = actual.metadata["moon_reconform"], raw["metadata"]["moon_reconform"]
+            assert dict(origin) == written_origin, (dict(origin), written_origin)
+        # Markers kept from the input, the editor's and the held copies
+        # alike, come back as they went in.
+        for actual, raw in zip(loaded_markers[:len(kept)], kept):
+            assert actual.name == raw["name"] and dict(actual.metadata) == raw.get("metadata", {})
 
 
 def demo():
