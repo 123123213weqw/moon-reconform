@@ -65,6 +65,12 @@ FAULTS = [
     Fault("a placement's track position goes through 32 bits",
           Edit(PLAN, "let start = shot.timeline.start + (from - source_span(shot).start)",
                "let start = shot.timeline.start.to_int().to_int64() + (from - source_span(shot).start)")),
+    Fault("a track of any kind is read as cuts",
+          Edit(OTIO, 'if kind != "Video" && kind != "Audio" {',
+               'if kind != "Video" && kind != "Audio" && kind.length() < 0 {')),
+    Fault("anything is kept where a marker should be",
+          Edit(OTIO, "        guard marker is Object(_) else {",
+               "        guard marker is Object(_) || marker is Number(_) else {")),
     # The index and the timeline.
     Fault("a shot with one frame inside is not a candidate",
           Edit(INDEX, "    if span.stop > target.start {", "    if span.stop - 1 > target.start {")),

@@ -204,10 +204,31 @@ fn otio_track(
   }
   let track = object(value, "selected track")
   expect_schema(track, "Track.1", "selected track")
-  if field_string(track, "kind", "selected track") != "Video" {
-    raise Invalid("selected track must be Video")
+  // A Video track and an Audio track are each one line of time whose
+  // children are cuts of footage, which is all the plan needs of a track.
+  // A Transition track, or a kind an application made up, means something
+  // else and is refused rather than read as cuts.
+  let kind = field_string(track, "kind", "selected track")
+  if kind != "Video" && kind != "Audio" {
+    raise Invalid("selected track must be a Video or Audio track")
   }
   untrimmed(track, "selected track")
+  // The track's markers are handed back as they are, read or not, so each
+  // has to be a marker: an object. Anything else in their place is not
+  // something this tool would know how to keep. The rule sits here, where
+  // every reader of a track passes, so that plan, apply and from_markers
+  // agree on it.
+  match track.get("markers") {
+    None => ()
+    Some(value) =>
+      for i, marker in array(value, "selected track.markers") {
+        guard marker is Object(_) else {
+          raise Invalid(
+            "selected track marker " + i.to_string() + ": expected an object",
+          )
+        }
+      }
+  }
   track
 }
 
@@ -240,7 +261,7 @@ fn check_fps(fps : Int32) -> Unit raise ReconformError {
 }
 
 ///|
-/// Read one untrimmed hard-cut Video track from a Timeline.1.
+/// Read one untrimmed hard-cut Video or Audio track from a Timeline.1.
 pub fn read_otio(
   root : Json,
   track_index~ : Int32,

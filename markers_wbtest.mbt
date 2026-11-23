@@ -104,10 +104,15 @@ fn j_exported(
 
 ///|
 fn j_track(children : Array[Json], markers : Array[Json]) -> Json {
+  j_kind("Video", children, markers)
+}
+
+///|
+fn j_kind(kind : String, children : Array[Json], markers : Array[Json]) -> Json {
   j_obj({
     "OTIO_SCHEMA": Json("Track.1"),
     "name": Json("V1"),
-    "kind": Json("Video"),
+    "kind": Json(kind),
     "children": Json::array(children),
     "metadata": j_empty(),
     "source_range": Json::null(),
@@ -467,3 +472,4 @@ test "only markers with an origin are read, and a malformed one is refused" {
     "selected track marker 0: unsupported schema Marker.9",
   )
 }
+

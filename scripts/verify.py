@@ -59,14 +59,14 @@ def marker(name, start, duration, fps):
                marked_range=time_range(start, duration, fps))
 
 
-def make_track(children, markers=()):
-    return obj("Track.1", name="V1", kind="Video", children=children, metadata={},
+def make_track(children, markers=(), kind="Video"):
+    return obj("Track.1", name="V1", kind=kind, children=children, metadata={},
                source_range=None, markers=list(markers), effects=[], enabled=True, color=None)
 
 
-def timeline(children, markers=()):
+def timeline(children, markers=(), kind="Video"):
     tracks = obj("Stack.1", name="tracks", source_range=None, metadata={},
-                 children=[make_track(children, markers)], markers=[], effects=[])
+                 children=[make_track(children, markers, kind)], markers=[], effects=[])
     return obj("Timeline.1", name="Review", metadata={}, global_start_time=None, tracks=tracks)
 
 
@@ -231,8 +231,11 @@ def planned(old, index, note):
 
 
 def origin_key(item):
-    """The (note, piece) a marker was exported from, or None for anyone else's."""
-    origin = (item.get("metadata") or {}).get("moon_reconform")
+    """The (note, piece) a marker was exported from, or None for anyone
+    else's. Anything of the editor's is passed over unread, whatever it
+    holds, exactly as the tool passes it over."""
+    metadata = item.get("metadata")
+    origin = metadata.get("moon_reconform") if isinstance(metadata, dict) else None
     if not isinstance(origin, dict) or not isinstance(origin.get("note_id"), str):
         return None
     piece = origin.get("piece")
@@ -703,7 +706,9 @@ def verify_beyond_enumeration(directory, otio):
         ("whole", 0, half + 48),
     ], choices=[dict(note_id="head", piece=1, clip=3)])
     paths = files(directory, before, after, notes)
+    began = time.perf_counter()
     report = invoke("plan", paths)
+    seconds = time.perf_counter() - began
     status = verify_report(before, after, notes, report, walk=False)
     assert set(status) == {"ambiguous", "unique", "deleted", "gap"}
     assert (report["old_duration"], report["new_duration"]) == (half + 48, quarter + 11)
@@ -791,7 +796,10 @@ def verify_beyond_enumeration(directory, otio):
     assert exponent != text
     paths[0].write_text(exponent, encoding="utf-8")
     assert invoke("plan", paths) == report
-    return status
+    # A cut 2^51 frames long costs what a cut of fifty does: nothing here
+    # walks a frame.
+    assert seconds < 5, seconds
+    return dict(status, seconds=round(seconds, 2))
 
 
 def verify_command(directory):
@@ -995,6 +1003,96 @@ def verify_edge(directory):
     return dict(seconds=round(seconds, 2), largest_input_mb=round(largest / 1e6, 2), **status)
 
 
+def verify_audio(directory, otio):
+    """A sound track is a line of cuts like a picture track. Notes about
+    dialogue travel by their sound footage exactly as notes about picture do,
+    land as markers on the sound track alone, and read back next round."""
+    a, b, picture = "file:///shoot/A.wav", "file:///shoot/B.wav", "file:///shoot/A.mov"
+
+    def sequence(video, sound, sound_markers=()):
+        cut = timeline(video)
+        cut["tracks"]["children"].append(make_track(sound, sound_markers, kind="Audio"))
+        return cut
+
+    # Sound: A[40,48), a frame of silence, B[0,6) before; A[42,46), B[0,3),
+    # two frames of silence and A[44,48) after.
+    before = sequence([clip(picture, 10, 10, 24), gap(2, 24), clip(picture, 14, 4, 24)],
+                      [clip(a, 40, 8, 24), gap(1, 24), clip(b, 0, 6, 24)])
+    after = sequence([clip(picture, 12, 3, 24), clip(picture, 14, 4, 24)],
+                     [clip(a, 42, 4, 24), clip(b, 0, 3, 24), gap(2, 24), clip(a, 44, 4, 24)],
+                     [marker("Sound lead's own marker", 8, 1, 24)])
+    notes = request(1, 1, [("dialogue-in", 2, 5), ("line", 10, 12), ("silence", 8, 9)],
+                    choices=[dict(note_id="dialogue-in", piece=1, clip=3)])
+    paths = files(directory, before, after, notes)
+    report = invoke("plan", paths)
+    status = verify_report(before, after, notes, report)
+    # By hand. The new sound track runs A[42,46) at 0, B[0,3) at 4, two
+    # frames of silence at 7 and A[44,48) at 9. The note is A[42,45): its
+    # first two frames sit once, in the first clip, and its last frame
+    # again in the fourth, where the choice takes it. The line is B[1,3),
+    # which the new cut keeps whole, five frames in. The silence is black.
+    placed = {(t["note_id"], t["piece"]): (t["placement"]["clip"], t["placement"]["range"]["start"])
+              for t in report["transfers"]}
+    assert placed == {("dialogue-in", 0): (0, 0), ("dialogue-in", 1): (3, 9), ("line", 0): (1, 5)}, placed
+    assert report["held"] == ["silence"] and report["carry"] == []
+    output = directory / "sound.otio"
+    assert invoke("apply", [*paths, output]) == report
+    verify_export(after, notes, report, output, otio)
+    written = json.loads(output.read_text(encoding="utf-8"))
+    assert [m["name"] for m in track(written, 1)["markers"]] == [
+        "Sound lead's own marker", "审阅 dialogue-in", "审阅 dialogue-in", "审阅 line"]
+    assert track(written, 0)["markers"] == [] and track(written, 0)["kind"] == "Video"
+
+    # The index decides which line of cuts a note is read against. The
+    # same frames of the picture track are A.mov[12,15), which the new
+    # picture cut repeats from 14 as well, so there the note waits for a
+    # choice; two frames of it, A.mov[12,14), land once.
+    same = request(0, 0, [("dialogue-in", 2, 5)])
+    waiting = invoke("plan", files(directory, before, after, same))
+    verify_report(before, after, same, waiting)
+    assert waiting["held"] == ["dialogue-in"]
+    assert [note["id"] for note in waiting["carry"]] == ["dialogue-in#0", "dialogue-in#1"]
+    other = request(0, 0, [("wide", 2, 4)])
+    seen = invoke("plan", files(directory, before, after, other))
+    verify_report(before, after, other, seen)
+    assert [t["placement"] for t in seen["transfers"]] == [dict(clip=0, range=dict(start=0, stop=2))]
+
+    # Round two on sound: the editor's cut carries all three markers at
+    # their old timecodes. The first has lost its footage and stays where
+    # the editor put it; the other two find theirs elsewhere and their
+    # stale copies give way.
+    third = make_track([clip(a, 44, 4, 24), gap(1, 24), clip(b, 0, 3, 24)])
+    stale = copy.deepcopy(track(written, 1)["markers"])
+    third = timeline([], kind="Audio")
+    third["tracks"]["children"] = [make_track(
+        [clip(a, 44, 4, 24), gap(1, 24), clip(b, 0, 3, 24)], stale, kind="Audio")]
+    again = request(1, 0, [], from_markers=True)
+    paths = files(directory, written, third, again)
+    second = invoke("plan", paths)
+    verify_report(written, third, again, second, imported_notes(written, 1))
+    assert second["held"] == ["dialogue-in#0"]
+    assert [t["note_id"] for t in second["transfers"]] == ["dialogue-in#1", "line#0"]
+    assert second["transfers"][0]["placement"] == dict(clip=0, range=dict(start=0, stop=1))
+    assert second["transfers"][1]["placement"] == dict(clip=2, range=dict(start=6, stop=8))
+    second_output = directory / "sound-again.otio"
+    invoke("apply", [*paths, second_output])
+    verify_export(third, again, second, second_output, otio, imported_notes(written, 1))
+    # Where each marker is drawn tells the kept copy from the fresh ones:
+    # the stale copy of the held annotation keeps its old timecode, [0,2),
+    # and the two fresh markers sit on their footage.
+    drawn = [(m["marked_range"]["start_time"]["value"], m["marked_range"]["duration"]["value"])
+             for m in track(json.loads(second_output.read_text(encoding="utf-8")), 0)["markers"]]
+    assert drawn == [(8, 1), (0, 2), (0, 1), (6, 2)], drawn
+
+    # A track of another kind is not a line of cuts and is refused by name.
+    for kind in ("Transition", "video", "AUDIO", ""):
+        bad = copy.deepcopy(after)
+        track(bad, 1)["kind"] = kind
+        invoke("plan", files(directory, before, bad, notes),
+               "selected track must be a Video or Audio track")
+    return status
+
+
 def fetch_fixture():
     source = Request(FIXTURE, headers={"User-Agent": "MoonReConform-verification/0.1"})
     for attempt in range(3):
@@ -1076,9 +1174,11 @@ def main():
         print("Three review rounds, read-back markers, superseded copies and safeguards: "
               f"{dict(verify_rounds(work, opentimelineio))}")
         print("Frame counts beyond enumeration, 2^51-frame cuts and footage near 2^53: "
-              f"{dict(verify_beyond_enumeration(work, opentimelineio))} (pieces)")
+              f"{verify_beyond_enumeration(work, opentimelineio)} (pieces)")
         print("The command's own failures, each message checked whole: "
               f"{verify_command(work)} groups")
+        print("Audio tracks, picture and sound side by side, two rounds: "
+              f"{dict(verify_audio(work, opentimelineio))}")
         print("Budgets and counts, one step short accepted and one step past refused: "
               f"{verify_budgets(work)}")
         if not args.quick:
