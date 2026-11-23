@@ -1047,6 +1047,8 @@ def main():
     parser.add_argument("--demo", type=Path, help="write standalone local demo inputs and exit")
     parser.add_argument("--release", action="store_true",
                         help="verify the release build of the command instead of the debug one")
+    parser.add_argument("--quick", action="store_true",
+                        help="leave out the heavy edge of the limits; for fault injection")
     args = parser.parse_args()
     global CLI
     if args.release:
@@ -1079,8 +1081,9 @@ def main():
               f"{verify_command(work)} groups")
         print("Budgets and counts, one step short accepted and one step past refused: "
               f"{verify_budgets(work)}")
-        print("20,000 children and 10,000 annotations at the edge: "
-              f"{verify_edge(work)}")
+        if not args.quick:
+            print("20,000 children and 10,000 annotations at the edge: "
+                  f"{verify_edge(work)}")
         if args.live_fixture:
             print("ElFuente 60 fps metadata, 1430 to 1036 frames, "
                   f"3 transfers, 2 held: {dict(verify_real(work, opentimelineio))}")

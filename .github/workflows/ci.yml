@@ -32,6 +32,31 @@ jobs:
       - run: moon check --target ${{ matrix.target }} --deny-warn
       - run: moon build --target ${{ matrix.target }} --deny-warn
       - run: moon test --target ${{ matrix.target }} --deny-warn
-      - name: Independent oracle and CLI checks
+      - name: Independent oracle and CLI checks, limits included
         if: matrix.target == 'js'
         run: python scripts/verify.py --live-fixture
+      - name: Fuzz the built command
+        if: matrix.target == 'js'
+        run: python scripts/fuzz.py --count 600
+      - name: The oracle against the release build
+        if: matrix.target == 'js'
+        run: python scripts/verify.py --release --quick
+  faults:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - uses: hustcer/setup-moonbit@87e2bdf5cf20d3b6f5c5f266a8a513f503bb5b76
+        with:
+          version: '0.10.20+65efd5b93'
+          core-version: '0.10.20+65efd5b93'
+      - run: moon version --all
+      - run: moon update
+      - name: Every known fault must be noticed by the tests
+        run: python scripts/mutate.py --workers 4

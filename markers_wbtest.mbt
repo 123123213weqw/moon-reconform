@@ -286,8 +286,13 @@ test "exported markers read back by footage and supersede their copies" {
     j_origin(markers[1])["source"].stringify(),
     j_span(11L, 13L).stringify(),
   )
-  // The input is never edited: both of its markers are still there.
+  // The input is never edited: both of its markers are still there. The
+  // second is the stale copy itself, compared whole, because the fresh
+  // marker carries the same name and a count or a list of names would
+  // pass for an export that swapped them.
   assert_eq(j_markers(third_cut).length(), 2)
+  assert_eq(j_name(j_markers(third_cut)[0]), "editor's own marker")
+  assert_eq(j_markers(third_cut)[1].stringify(), stale.stringify())
 
   // A held annotation supersedes nothing. When its footage is gone, the
   // copy the editor carried stays exactly where the editor put it, and the
