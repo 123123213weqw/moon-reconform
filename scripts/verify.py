@@ -1,12 +1,14 @@
 """Verify the built Node CLI against an independent frame-by-frame oracle."""
 
 import argparse
+import bisect
 import copy
 import hashlib
 import json
 import random
 import subprocess
 import tempfile
+import time
 from collections import Counter, defaultdict
 from pathlib import Path
 from urllib.error import URLError
@@ -93,15 +95,15 @@ def files(directory, before, after, notes):
     return paths
 
 
-def launch(*argv):
+def launch(*argv, timeout=20):
     proc = subprocess.run(["node", str(CLI), *map(str, argv)], cwd=ROOT,
-                          capture_output=True, encoding="utf-8", timeout=20)
+                          capture_output=True, encoding="utf-8", timeout=timeout)
     assert not proc.stderr, proc.stderr
     return proc
 
 
-def invoke(mode, paths, error=None):
-    proc = launch(mode, *paths)
+def invoke(mode, paths, error=None, timeout=20):
+    proc = launch(mode, *paths, timeout=timeout)
     assert proc.stdout, (proc.returncode, proc.stderr)
     result = json.loads(proc.stdout)
     if error is None:
@@ -146,7 +148,42 @@ def frames(document, index):
     return result
 
 
-def planned(old, new, note):
+BUCKET = 256
+
+
+def index_spans(new):
+    """New placements grouped for lookup by media and, within a media, by
+    bucket of 256 source frames, so that a run of footage meets a handful of
+    intervals instead of the whole cut. A placement longer than a bucket is
+    kept apart and always consulted."""
+    groups = {"all": defaultdict(list), "long": defaultdict(list),
+              "bucket": defaultdict(list)}
+    for shot in new:
+        child, at, end, media, first = shot
+        if media is None:
+            continue
+        groups["all"][media].append(shot)
+        length = end - at
+        if length > BUCKET:
+            groups["long"][media].append(shot)
+            continue
+        for bucket in {first // BUCKET, (first + length - 1) // BUCKET}:
+            groups["bucket"][media, bucket].append(shot)
+    return groups
+
+
+def covering(index, media, source):
+    """Every placement of `media` that can overlap a source range."""
+    if source["stop"] - source["start"] > BUCKET:
+        return index["all"][media]
+    first, last = source["start"] // BUCKET, (source["stop"] - 1) // BUCKET
+    found = [*index["long"][media], *index["bucket"][media, first]]
+    if last != first:
+        found += index["bucket"][media, last]
+    return list(dict.fromkeys(found))
+
+
+def planned(old, index, note):
     """The pieces an annotation must produce, by plain interval arithmetic:
     cut each run of footage wherever the set of new placements covering it
     changes. Nothing here sweeps endpoints or keeps a budget, and every
@@ -172,9 +209,7 @@ def planned(old, new, note):
                                status="gap", candidates=[]))
             continue
         hits = []
-        for child, at, end, other, first in new:
-            if other != key:
-                continue
+        for child, at, end, _, first in covering(index, key, source):
             lo, hi = max(source["start"], first), min(source["stop"], first + end - at)
             if lo < hi:
                 hits.append((child, at, first, lo, hi))
@@ -261,6 +296,7 @@ def verify_report(before, after, notes, report, imported=(), walk=True):
     from the pieces, whichever way they were checked."""
     old = spans(before, notes["old_track"])
     new = spans(after, notes["new_track"])
+    index = index_spans(new)
 
     def length(shots):
         return sum(end - at for _, at, end, _, _ in shots)
@@ -291,7 +327,7 @@ def verify_report(before, after, notes, report, imported=(), walk=True):
         assert summary["media"] == anchored
         assert summary["range"] == dict(start=start, stop=stop)
         assert summary["origin"] == note.get("origin")
-        assert summary["pieces"] == planned(old, new, note), note["id"]
+        assert summary["pieces"] == planned(old, index, note), note["id"]
         cursor, proposed = start, []
         for piece_index, piece in enumerate(summary["pieces"]):
             if not walk:
@@ -840,6 +876,125 @@ def verify_command(directory):
     return len(checked)
 
 
+def verify_budgets(directory):
+    """The budgets and the counts the README states, met exactly and stepped
+    past: one annotation fewer than the limit is accepted and right, and at
+    the limit the refusal names the limit. Cheap enough to run anywhere."""
+    x = "file:///shoot/X.mov"
+
+    # The budgets bound one analysis, not one document. A thousand
+    # annotations that each make the index look at a thousand placements
+    # overrun the search budget while the report stays small; fifty that
+    # each meet two thousand placements overrun the report budget while
+    # the search stays small.
+    scanned = timeline([clip(x, 0, 100000, 24), *[clip(x, k + 1, 1, 24) for k in range(1999)]])
+    flat = timeline([clip(x, 0, 2000, 24)])
+    for count, error in ((999, None), (1000, "candidate search budget exceeded")):
+        many = request(0, 0, [(f"s{i}", 1000, None) for i in range(count)])
+        paths = files(directory, flat, scanned, many)
+        if error is None:
+            found = invoke("plan", paths, timeout=600)
+            verify_report(flat, scanned, many, found)
+            assert found["held"] == [note["id"] for note in many["notes"]]
+        else:
+            invoke("plan", paths, error, timeout=600)
+    crowded = timeline([clip(x, 0, 1, 24)] * 2000)
+    lone = timeline([clip(x, 0, 100, 24)])
+    for count, error in ((49, None), (50, "report piece and candidate budget exceeded")):
+        fifty = request(0, 0, [(f"r{i}", 0, None) for i in range(count)])
+        paths = files(directory, lone, crowded, fifty)
+        if error is None:
+            found = invoke("plan", paths, timeout=600)
+            verify_report(lone, crowded, fifty, found)
+            assert len(found["notes"][0]["pieces"][0]["candidates"]) == 2000
+        else:
+            invoke("plan", paths, error, timeout=600)
+
+    # The counts: ten thousand annotations are read, ten thousand and one
+    # are not; a hundred thousand manual choices are read, one more is not;
+    # and a track of 20,000 children is read, one more is not.
+    one = timeline([clip(x, 0, 4, 24)])
+    single = request(0, 0, [("n", 0, None)])
+    for bad in (timeline([gap(1, 24)] * 20001),
+                timeline([clip(x, 0, 1, 24)] + [gap(1, 24)] * 20000)):
+        invoke("plan", files(directory, bad, one, single), "too many shots; limit is 20000")
+    # A track of exactly 20,000 children is still a timeline: here, black.
+    edges = invoke("plan", files(directory, timeline([gap(1, 24)] * 20000), one, single))
+    assert edges["held"] == ["n"] and edges["old_duration"] == 20000
+    full = request(0, 0, [(f"n{i}", 0, None) for i in range(10000)])
+    full_report = invoke("plan", files(directory, one, one, full), timeout=600)
+    verify_report(one, one, full, full_report)
+    assert len(full_report["transfers"]) == 10000
+    over = request(0, 0, [(f"n{i}", 0, None) for i in range(10001)])
+    invoke("plan", files(directory, one, one, over), "too many annotations; limit is 10000")
+    chosen = request(0, 0, [("n", 0, None)],
+                     choices=[dict(note_id="n", piece=0, clip=i) for i in range(100001)])
+    invoke("plan", files(directory, one, one, chosen), "too many manual selections")
+
+    # The frame rate is an integer from 1 to 240, and the document has to
+    # agree with it.
+    for fps in (0, 241):
+        invoke("plan", files(directory, one, one, request(0, 0, [("n", 0, None)], fps=fps)),
+               "fps must be between 1 and 240")
+    for fps in (1, 240):
+        cut = timeline([clip(x, 0, 4, fps)])
+        report = invoke("plan", files(directory, cut, cut, request(0, 0, [("n", 0, None)], fps=fps)))
+        assert report["transfers"][0]["placement"] == dict(clip=0, range=dict(start=0, stop=1))
+    invoke("plan", files(directory, one, one, request(0, 0, [("n", 0, None)], fps=25)),
+           "RationalTime rate differs from the requested integer fps")
+
+    # A track index is an Int32 that has to exist.
+    far = request(2 ** 31, 0, [("n", 0, None)])
+    invoke("plan", files(directory, one, one, far), "request.old_track: exceeds index range")
+    far = request(0, 3, [("n", 0, None)])
+    invoke("plan", files(directory, one, one, far), "track index is outside the stack")
+    return dict(search="999 accepted, 1000 refused", report="49 accepted, 50 refused",
+                children="20,000 read, 20,001 refused",
+                annotations="10,000 accepted, 10,001 refused", choices="100,001 refused")
+
+
+def verify_edge(directory):
+    """The edge itself: 20,000 children on each side and 10,000 annotations,
+    the most one request may hold. The new cut is the old one played back in
+    reverse, so child i is child 19999 - i and every frame has exactly one
+    home. Returns what the edge cost."""
+    media = [f"file:///shoot/{name}.mov" for name in "abcd"]
+
+    def running(lengths):
+        total = [0]
+        for length in lengths:
+            total.append(total[-1] + length)
+        return total
+
+    lengths = [2 + i % 3 for i in range(20000)]
+    children = [clip(media[i % 4], i, lengths[i], 24) for i in range(20000)]
+    before, after = timeline(children), timeline(children[::-1])
+    old_starts, new_starts = running(lengths), running(lengths[::-1])
+    notes = request(0, 0, [(str(i), i * 6, None) for i in range(10000)])
+    assert notes["notes"][-1]["start"] < old_starts[-1] < 60000
+    paths = files(directory, before, after, notes)
+    largest = max(path.stat().st_size for path in paths)
+    assert largest <= 16_000_000, "the largest request the limits allow must still be readable"
+    began = time.perf_counter()
+    report = invoke("plan", paths, timeout=600)
+    seconds = time.perf_counter() - began
+    status = verify_report(before, after, notes, report)
+    assert report["held"] == [] and report["carry"] == [] and len(report["transfers"]) == 10000
+    assert set(status) == {"unique"}
+    # In closed form, for all ten thousand: the frame's child in the old
+    # cut is found by bisection and its place in the new cut by the mirror.
+    for note, transfer in zip(notes["notes"], report["transfers"]):
+        frame = note["start"]
+        i = bisect.bisect_right(old_starts, frame) - 1
+        home = 19999 - i
+        at = new_starts[home] + frame - old_starts[i]
+        assert transfer["note_id"] == note["id"] and transfer["placement"] == dict(
+            clip=home, range=dict(start=at, stop=at + 1)), note["id"]
+    assert seconds < 300, seconds
+
+    return dict(seconds=round(seconds, 2), largest_input_mb=round(largest / 1e6, 2), **status)
+
+
 def fetch_fixture():
     source = Request(FIXTURE, headers={"User-Agent": "MoonReConform-verification/0.1"})
     for attempt in range(3):
@@ -890,13 +1045,19 @@ def main():
     parser.add_argument("--live-fixture", action="store_true", help="fetch and verify the pinned ElFuente OTIO")
     parser.add_argument("--official-otio", action="store_true", help="also open exports via Python OpenTimelineIO")
     parser.add_argument("--demo", type=Path, help="write standalone local demo inputs and exit")
+    parser.add_argument("--release", action="store_true",
+                        help="verify the release build of the command instead of the debug one")
     args = parser.parse_args()
+    global CLI
+    if args.release:
+        CLI = ROOT / "_build/js/release/build/cmd/main/main.js"
     if args.demo is not None:
         args.demo.mkdir(parents=True, exist_ok=False)
         files(args.demo, *demo())
         print(args.demo)
         return
-    subprocess.run(["moon", "build", "--target", "js"], check=True, cwd=ROOT)
+    subprocess.run(["moon", "build", "--target", "js", *(["--release"] if args.release else [])],
+                   check=True, cwd=ROOT)
     if args.official_otio:
         import opentimelineio
     else:
@@ -916,6 +1077,10 @@ def main():
               f"{dict(verify_beyond_enumeration(work, opentimelineio))} (pieces)")
         print("The command's own failures, each message checked whole: "
               f"{verify_command(work)} groups")
+        print("Budgets and counts, one step short accepted and one step past refused: "
+              f"{verify_budgets(work)}")
+        print("20,000 children and 10,000 annotations at the edge: "
+              f"{verify_edge(work)}")
         if args.live_fixture:
             print("ElFuente 60 fps metadata, 1430 to 1036 frames, "
                   f"3 transfers, 2 held: {dict(verify_real(work, opentimelineio))}")
