@@ -139,6 +139,13 @@ def run(*command, cwd):
     return subprocess.run(command, cwd=cwd, capture_output=True, text=True).returncode
 
 
+def build(tree):
+    """Build the command in a tree; says why on failure."""
+    proc = subprocess.run(["moon", "build", "--target", "js"], cwd=tree,
+                          capture_output=True, text=True)
+    return "" if proc.returncode == 0 else (proc.stdout + proc.stderr).strip()[-600:]
+
+
 def apply(fault, tree):
     """Write a fault into the tree and return the text each file had, so
     that putting it back never depends on finding the fault again."""
@@ -154,11 +161,12 @@ def judge(fault, tree):
     """Apply one fault in a private copy of the tree and report who noticed."""
     originals = apply(fault, tree)
     try:
-        if run("moon", "build", "--target", "js", cwd=tree) != 0:
-            return fault, "does not compile", False, False
+        why = build(tree)
+        if why:
+            return fault, "does not compile", False, False, why
         tests = run("moon", "test", "--target", "js", "--deny-warn", cwd=tree) != 0
         oracle = run(sys.executable, "scripts/verify.py", "--quick", cwd=tree) != 0
-        return fault, "missed" if not (tests or oracle) else "caught", tests, oracle
+        return fault, "missed" if not (tests or oracle) else "caught", tests, oracle, ""
     finally:
         for file, text in originals.items():
             (tree / file).write_text(text, encoding="utf-8")
@@ -173,7 +181,7 @@ def worker(job):
                         ignore=shutil.ignore_patterns("_build", ".mooncakes", ".git", "__pycache__"))
         os.symlink(v.ROOT / ".mooncakes", tree / ".mooncakes")
         (tree / "_build").mkdir()
-        return [dict(number=number, **dict(zip(("fault", "verdict", "tests", "oracle"),
+        return [dict(number=number, **dict(zip(("fault", "verdict", "tests", "oracle", "why"),
                                                  judge(FAULTS[number - 1], tree))))
                 for number in numbers]
     finally:
@@ -197,7 +205,14 @@ def main():
                       f"the tree already carries it or the source moved on. "
                       f"Restore the tree, or update the fault.", file=sys.stderr)
                 return 2
+    # The private copies share the root's dependencies and build from
+    # scratch, so the root has to have fetched them and to build itself.
     (v.ROOT / "_build").mkdir(exist_ok=True)
+    why = build(v.ROOT)
+    if why or not (v.ROOT / ".mooncakes").is_dir():
+        print(f"the tree does not build, so its faults cannot be judged:\n{why}",
+              file=sys.stderr)
+        return 2
     began = time.perf_counter()
     shares = [numbers[i::args.workers] for i in range(args.workers)]
     with multiprocessing.Pool(args.workers) as pool:
@@ -216,7 +231,9 @@ def main():
             note = by
         else:
             note = verdict.upper()
-        print(f"{result['number']:3d}  {fault.name:<56} {note}")
+            if result.get("why"):
+                note += "\n" + result["why"]
+        print(f"{result['number']:3d}  {fault.name:<56} {note}", flush=True)
     print(f"{len(found)} faults in {time.perf_counter() - began:.0f}s: "
           f"{tally['caught by both']} caught by both, "
           f"{tally['caught by the oracle alone']} by the oracle alone, "
