@@ -5,6 +5,8 @@ pub(all) struct Request {
   new_track : Int32
   notes : Array[Note]
   selections : Array[Selection]
+  /// Read the old track's exported markers as annotations too.
+  from_markers : Bool
 }
 
 ///|
@@ -48,10 +50,20 @@ fn fields_only(
 ///|
 pub fn read_request(value : Json) -> Request raise ReconformError {
   let fields = object(value, "request")
-  fields_only(fields, ["fps", "old_track", "new_track", "notes", "selections"], "request")
+  fields_only(
+    fields,
+    ["fps", "old_track", "new_track", "notes", "selections", "from_markers"],
+    "request",
+  )
   let fps = index_field(fields, "fps", "request")
   let old_track = index_field(fields, "old_track", "request")
   let new_track = index_field(fields, "new_track", "request")
+  let from_markers = match fields.get("from_markers") {
+    None => false
+    Some(True) => true
+    Some(False) => false
+    Some(_) => raise Invalid("request.from_markers: expected a boolean")
+  }
   let input = array(required(fields, "notes", "request"), "request.notes")
   if input.length() > 10000 {
     raise Limit("too many annotations; limit is 10000")
@@ -60,7 +72,11 @@ pub fn read_request(value : Json) -> Request raise ReconformError {
   for value in input {
     let note = object(value, "annotation")
     let id = field_string(note, "id", "annotation")
-    fields_only(note, ["id", "text", "start", "stop", "media", "source"], "annotation " + id)
+    fields_only(
+      note,
+      ["id", "text", "start", "stop", "media", "source"],
+      "annotation " + id,
+    )
     let text = field_string(note, "text", "annotation")
     // An annotation is anchored either to the old track, by start and
     // stop, or to source media, by media and source. The two never mix.
@@ -80,7 +96,8 @@ pub fn read_request(value : Json) -> Request raise ReconformError {
       Some(value) => {
         if note.contains("start") || note.contains("stop") {
           raise Invalid(
-            "annotation " + id +
+            "annotation " +
+            id +
             ": media and source cannot combine with start and stop",
           )
         }
@@ -97,7 +114,7 @@ pub fn read_request(value : Json) -> Request raise ReconformError {
         (range, Some(key))
       }
     }
-    notes.push({ id, text, range, media, })
+    notes.push({ id, text, range, media, origin: None, })
   }
   let selections = []
   if fields.get("selections") is Some(value) {
@@ -115,7 +132,7 @@ pub fn read_request(value : Json) -> Request raise ReconformError {
       })
     }
   }
-  { fps, old_track, new_track, notes, selections, }
+  { fps, old_track, new_track, notes, selections, from_markers, }
 }
 
 ///|
@@ -163,6 +180,16 @@ fn piece_json(piece : Piece) -> Json {
 }
 
 ///|
+/// The marker an annotation was read back from, when it was.
+fn origin_json(origin : (String, Int32)?) -> Json {
+  match origin {
+    Some((note_id, piece)) =>
+      Json::object({ "note_id": Json(note_id), "piece": Json(piece) })
+    None => Json::null()
+  }
+}
+
+///|
 fn carry_json(note : Note) -> Json {
   guard note.media is Some(key) else {
     abort("carried annotations are anchored to source media")
@@ -177,8 +204,9 @@ fn carry_json(note : Note) -> Json {
 
 ///|
 /// The report names each annotation with its anchor, so `range` reads as
-/// old-track frames when `media` is null and as source frames otherwise.
-/// `carry` restates every held annotation for the next request.
+/// old-track frames when `media` is null and as source frames otherwise,
+/// and with the marker it was read back from when `origin` is set. `carry`
+/// restates every held annotation for the next request.
 pub fn report_json(
   before : Timeline,
   after : Timeline,
@@ -199,6 +227,7 @@ pub fn report_json(
             None => Json::null()
           },
           "range": span_json(report.note.range),
+          "origin": origin_json(report.note.origin),
           "pieces": Json::array(report.pieces.map(piece_json)),
         })
       }),
@@ -210,6 +239,7 @@ pub fn report_json(
           "note_id": Json(transfer.note_id),
           "piece": Json(transfer.piece),
           "placement": placement_json(transfer.placement),
+          "origin": origin_json(transfer.origin),
         })
       }),
     ),

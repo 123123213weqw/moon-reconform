@@ -19,27 +19,39 @@ test "partition preserves range and boundary ownership across gaps, trims and re
       text: "whole range",
       range: { start: 0L, stop: 20L, },
       media: None,
+      origin: None,
     },
-    { id: "repeat", text: "pick", range: { start: 4L, stop: 5L, }, media: None },
+    {
+      id: "repeat",
+      text: "pick",
+      range: { start: 4L, stop: 5L, },
+      media: None,
+      origin: None,
+    },
     {
       id: "cut",
       text: "old shot B",
       range: { start: 10L, stop: 11L, },
       media: None,
+      origin: None,
     },
   ])
   let pieces = reports[0].pieces
   assert_eq(
-    pieces.map(piece => match piece.old {
-      Some(span) => span.start
-      None => -1L
+    pieces.map(piece => {
+      match piece.old {
+        Some(span) => span.start
+        None => -1L
+      }
     }),
     [0L, 2L, 4L, 5L, 8L, 10L, 14L, 16L, 17L],
   )
   assert_eq(
-    pieces.map(piece => match piece.old {
-      Some(span) => span.stop
-      None => -1L
+    pieces.map(piece => {
+      match piece.old {
+        Some(span) => span.stop
+        None => -1L
+      }
     }),
     [2L, 4L, 5L, 8L, 10L, 14L, 16L, 17L, 20L],
   )
@@ -77,6 +89,7 @@ test "large exact frames need only one interval and overflowing sums fail" {
       text: "",
       range: { start: max_frames - 1L, stop: max_frames, },
       media: None,
+      origin: None,
     },
   ])
   assert_eq(report[0].pieces[0].candidates[0].range.start, 9L)
@@ -106,9 +119,7 @@ test "source-anchored annotations resolve against the new cut alone" {
   // The old cut is one unrelated shot: a source-anchored annotation reads
   // nothing from it, which is what lets a held annotation outlive the cut
   // it was written on.
-  let before = Timeline::from_shots([
-    Clip("B", { start: 100L, stop: 104L, }),
-  ])
+  let before = Timeline::from_shots([Clip("B", { start: 100L, stop: 104L, })])
   let after = Timeline::from_shots([
     Clip("B", { start: 100L, stop: 104L, }),
     Clip("A", { start: 12L, stop: 15L, }),
@@ -122,24 +133,28 @@ test "source-anchored annotations resolve against the new cut alone" {
       text: "",
       range: { start: 30L, stop: 33L, },
       media: Some("A"),
+      origin: None,
     },
     {
       id: "once",
       text: "",
       range: { start: 16L, stop: 18L, },
       media: Some("A"),
+      origin: None,
     },
     {
       id: "twice",
       text: "",
       range: { start: 14L, stop: 16L, },
       media: Some("A"),
+      origin: None,
     },
     {
       id: "unknown",
       text: "",
       range: { start: 0L, stop: 2L, },
       media: Some("Z"),
+      origin: None,
     },
   ])
   // Footage that left the cut is deleted, and never had an old-track range.
@@ -159,17 +174,14 @@ test "source-anchored annotations resolve against the new cut alone" {
   // the rest is unique, so the annotation splits at 15.
   assert_eq(reports[2].pieces.length(), 2)
   assert_true(reports[2].pieces[0].kind is Ambiguous)
-  assert_eq(reports[2].pieces[0].candidates.map(p => p.range.start), [
-    6L, 9L,
-  ])
+  assert_eq(reports[2].pieces[0].candidates.map(p => p.range.start), [6L, 9L])
   assert_true(reports[2].pieces[1].kind is Unique)
   assert_true(reports[3].pieces[0].kind is Deleted)
   let resolution = resolve(reports, [{ note_id: "twice", piece: 0, clip: 3, }])
   assert_eq(resolution.held, ["gone", "unknown"])
-  assert_eq(
-    resolution.transfers.map(t => t.placement.range.start),
-    [11L, 9L, 10L],
-  )
+  assert_eq(resolution.transfers.map(t => t.placement.range.start), [
+    11L, 9L, 10L,
+  ])
   // An empty media key names footage that cannot exist in any cut.
   let empty = Ok(
     plan(before, after, [
@@ -178,6 +190,7 @@ test "source-anchored annotations resolve against the new cut alone" {
         text: "",
         range: { start: 0L, stop: 1L, },
         media: Some(""),
+        origin: None,
       },
     ]),
   ) catch {
@@ -218,12 +231,14 @@ test "carried restates held annotations by source and re-plans identically" {
       text: "whole range",
       range: { start: 0L, stop: 20L, },
       media: None,
+      origin: None,
     },
     {
       id: "repeat",
       text: "pick",
       range: { start: 4L, stop: 5L, },
       media: None,
+      origin: None,
     },
   ])
   let notes = carried(reports, resolve(reports, []))
@@ -231,8 +246,8 @@ test "carried restates held annotations by source and re-plans identically" {
   // piece on old-track black has no footage, so no annotation carries it.
   assert_eq(notes.length(), 9)
   assert_eq(notes.map(note => note.id), [
-    "whole#0", "whole#1", "whole#2", "whole#3", "whole#4", "whole#5",
-    "whole#7", "whole#8", "repeat#0",
+    "whole#0", "whole#1", "whole#2", "whole#3", "whole#4", "whole#5", "whole#7",
+    "whole#8", "repeat#0",
   ])
   assert_eq(notes[0].media, Some("A"))
   assert_eq(notes[0].range.start, 10L)

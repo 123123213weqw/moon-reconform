@@ -16,12 +16,14 @@ pub(all) enum Shot {
 /// frames of the source media named by `media` when the annotation is
 /// anchored to the footage itself. A source-anchored annotation needs
 /// nothing from the old cut, so it can follow the footage into any later
-/// version.
+/// version. `origin` names the exported marker the annotation was read
+/// back from, if it was.
 pub(all) struct Note {
   id : String
   text : String
   range : Span
   media : String?
+  origin : (String, Int32)?
 }
 
 ///|

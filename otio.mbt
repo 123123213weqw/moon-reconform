@@ -233,15 +233,20 @@ fn media_reference(
 }
 
 ///|
+fn check_fps(fps : Int32) -> Unit raise ReconformError {
+  if fps <= 0 || fps > 240 {
+    raise Invalid("fps must be between 1 and 240")
+  }
+}
+
+///|
 /// Read one untrimmed hard-cut Video track from a Timeline.1.
 pub fn read_otio(
   root : Json,
   track_index~ : Int32,
   fps~ : Int32,
 ) -> Timeline raise ReconformError {
-  if fps <= 0 || fps > 240 {
-    raise Invalid("fps must be between 1 and 240")
-  }
+  check_fps(fps)
   let track = otio_track(root, track_index)
   let children = array(
     required(track, "children", "selected track"),

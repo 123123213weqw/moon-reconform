@@ -124,7 +124,33 @@ def frames(document, index):
     return result
 
 
-def verify_report(before, after, notes, report):
+def origin_key(item):
+    """The (note, piece) a marker was exported from, or None for anyone else's."""
+    origin = (item.get("metadata") or {}).get("moon_reconform")
+    if not isinstance(origin, dict) or not isinstance(origin.get("note_id"), str):
+        return None
+    piece = origin.get("piece")
+    if isinstance(piece, bool) or not isinstance(piece, (int, float)) \
+            or not 0 <= piece <= 2147483647 or piece != int(piece):
+        return None
+    return origin["note_id"], int(piece)
+
+
+def imported_notes(document, index):
+    """What `from_markers` adds: our markers on the old track, each as the
+    footage its metadata records. Where the marker is drawn is not read."""
+    notes = []
+    for item in track(document, index)["markers"]:
+        key = origin_key(item)
+        if key is None:
+            continue
+        origin = item["metadata"]["moon_reconform"]
+        notes.append(dict(id=f"{key[0]}#{key[1]}", text=item["name"], media=origin["media"],
+                          source=origin["source"], origin=dict(note_id=key[0], piece=key[1])))
+    return notes
+
+
+def verify_report(before, after, notes, report, imported=()):
     """Assert complete conservation and each ordered destination for every anchored frame."""
     old = frames(before, notes["old_track"])
     new = frames(after, notes["new_track"])
@@ -136,8 +162,9 @@ def verify_report(before, after, notes, report):
     choices = {(r["note_id"], r["piece"]): r["clip"] for r in notes["selections"]}
     expected_held, expected_transfers, expected_carry = [], [], []
     statuses = Counter()
-    assert len(report["notes"]) == len(notes["notes"])
-    for note, summary in zip(notes["notes"], report["notes"]):
+    expected = [*notes["notes"], *imported]
+    assert len(report["notes"]) == len(expected)
+    for note, summary in zip(expected, report["notes"]):
         # A note is anchored to the old track by start and stop, or to
         # source footage by media and source. Either way it is a run of
         # frames to look up, one destination table per anchor.
@@ -150,6 +177,7 @@ def verify_report(before, after, notes, report):
         assert summary["id"] == note["id"] and summary["text"] == note["text"]
         assert summary["media"] == anchored
         assert summary["range"] == dict(start=start, stop=stop)
+        assert summary["origin"] == note.get("origin")
         cursor, proposed = start, []
         for piece_index, piece in enumerate(summary["pieces"]):
             if anchored is None:
@@ -186,7 +214,8 @@ def verify_report(before, after, notes, report):
             options = piece["candidates"]
             if len(options) == 1 or picked is not None:
                 placement = options[0] if picked is None else next(p for p in options if p["clip"] == picked)
-                proposed.append(dict(note_id=note["id"], piece=piece_index, placement=placement))
+                proposed.append(dict(note_id=note["id"], piece=piece_index, placement=placement,
+                                     origin=note.get("origin")))
         assert cursor == stop
         if len(proposed) == len(summary["pieces"]):
             expected_transfers.extend(proposed)
@@ -204,14 +233,20 @@ def verify_report(before, after, notes, report):
     return statuses
 
 
-def verify_export(after, notes, report, output, otio=None):
+def verify_export(after, notes, report, output, otio=None, imported=()):
     written = json.loads(output.read_text(encoding="utf-8"))
     selected = track(written, notes["new_track"])
     existing = track(after, notes["new_track"])["markers"]
-    assert selected["markers"][:len(existing)] == existing
-    transferred = selected["markers"][len(existing):]
+    # An annotation read back from a marker replaces, once it transfers, the
+    # copy an editor already conformed into the new cut. All else is kept.
+    superseded = {(t["origin"]["note_id"], t["origin"]["piece"]) for t in report["transfers"]
+                  if t["origin"] is not None}
+    kept = [m for m in existing if origin_key(m) not in superseded]
+    assert selected["markers"][:len(kept)] == kept
+    transferred = selected["markers"][len(kept):]
     assert len(transferred) == len(report["transfers"])
-    names = {n["id"]: n["text"] for n in notes["notes"]}
+    names = {n["id"]: n["text"] for n in [*notes["notes"], *imported]}
+    new = frames(after, notes["new_track"])
     for emitted, change in zip(transferred, report["transfers"]):
         placement = change["placement"]
         span = placement["range"]
@@ -219,16 +254,26 @@ def verify_export(after, notes, report, output, otio=None):
         assert emitted["marked_range"] == time_range(
             span["start"], span["stop"] - span["start"], notes["fps"]
         )
+        # The marker records the footage under its placement, enumerated
+        # frame by frame here rather than taken from the report.
+        under = new[span["start"]:span["stop"]]
+        assert len(under) == span["stop"] - span["start"] > 0
+        assert {child for child, _, _ in under} == {placement["clip"]}
+        media, first = under[0][1], under[0][2]
+        assert [source for _, _, source in under] == list(range(first, first + len(under)))
         assert emitted["metadata"]["moon_reconform"] == dict(
-            note_id=change["note_id"], piece=change["piece"], target_child=placement["clip"]
+            note_id=change["note_id"], piece=change["piece"], target_child=placement["clip"],
+            media=media, source=dict(start=first, stop=first + len(under))
         )
-    selected["markers"] = existing
-    assert written == after, "the export altered timeline data outside the appended markers"
+    selected["markers"] = kept
+    expected = copy.deepcopy(after)
+    track(expected, notes["new_track"])["markers"] = kept
+    assert written == expected, "the export altered timeline data outside the markers"
     if otio is not None:
         loaded = otio.adapters.read_from_file(str(output))
         loaded_markers = loaded.tracks[notes["new_track"]].markers
-        assert len(loaded_markers) == len(existing) + len(transferred)
-        for actual, raw in zip(loaded_markers[len(existing):], transferred):
+        assert len(loaded_markers) == len(kept) + len(transferred)
+        for actual, raw in zip(loaded_markers[len(kept):], transferred):
             assert actual.name == raw["name"]
             assert actual.marked_range.start_time.value == raw["marked_range"]["start_time"]["value"]
             assert actual.marked_range.duration.value == raw["marked_range"]["duration"]["value"]
@@ -380,6 +425,134 @@ def verify_sources(directory, otio):
     return status
 
 
+def verify_rounds(directory, otio):
+    """Three review rounds across cuts that carry markers conformed by timecode."""
+    before, after, notes = demo()
+    marked = directory / "round-one.otio"
+    first = invoke("apply", [*files(directory, before, after, notes), marked])
+    verify_report(before, after, notes, first)
+    ours = [m for m in track(json.loads(marked.read_text(encoding="utf-8")), 1)["markers"]
+            if origin_key(m) is not None]
+    assert len(ours) == 5
+    by_note = {origin_key(m): m for m in ours}
+
+    # Round two. Cut three was conformed by timecode from the application's
+    # copy of cut two, so every marker of ours now sits wherever its old
+    # timecode landed, which for three of them is other footage or black.
+    a, b = "file:///shoot/A.mov", "file:///shoot/B.mov"
+    third = timeline(
+        [clip(a, 12, 2, 24), gap(1, 24), clip(b, 100, 4, 24),
+         clip(a, 15, 2, 24), clip(a, 15, 2, 24), clip(a, 10, 2, 24)],
+        [by_note["split-across-new-cuts", 2], marker("Keep this marker", 5, 1, 24),
+         by_note["cut-frame", 0], by_note["split-across-new-cuts", 0],
+         by_note["repeat-choice", 0], by_note["split-across-new-cuts", 1]])
+    second = request(1, 0, [("round-two", 4, 6), ("round-two-gap", 7, 9), *first["carry"]],
+                     from_markers=True)
+    paths = files(directory, None, third, second)
+    paths[0].write_bytes(marked.read_bytes())
+    document = json.loads(marked.read_text(encoding="utf-8"))
+    report = invoke("plan", paths)
+    status = verify_report(document, third, second, report, imported_notes(document, 1))
+    # By hand: of the five read-back annotations only two still have their
+    # footage in cut three, and each lands on it.
+    assert [(t["note_id"], t["placement"]["clip"], t["placement"]["range"]["start"])
+            for t in report["transfers"] if t["origin"] is not None] == [
+                ("cut-frame#0", 2, 3), ("split-across-new-cuts#0", 0, 1)]
+    assert report["held"] == [
+        "round-two-gap", "entire-old#2", "entire-old#3", "entire-old#4", "entire-old#7",
+        "entire-old#8", "repeat-choice#0", "split-across-new-cuts#1", "split-across-new-cuts#2"]
+    assert len(report["transfers"]) == 6
+    output = directory / "round-two.otio"
+    assert invoke("apply", [*paths, output]) == report
+    verify_export(third, second, report, output, otio, imported_notes(document, 1))
+    written = json.loads(output.read_text(encoding="utf-8"))
+    # The two transferred copies are gone; the editor's marker and the
+    # copies of the three held annotations keep their order and place.
+    assert [m["name"] for m in track(written)["markers"][:4]] == [
+        "审阅 split-across-new-cuts", "Keep this marker", "审阅 repeat-choice",
+        "审阅 split-across-new-cuts"]
+    assert [m["marked_range"] for m in track(written)["markers"][:4]] == [
+        by_note["split-across-new-cuts", 2]["marked_range"],
+        marker("Keep this marker", 5, 1, 24)["marked_range"],
+        by_note["repeat-choice", 0]["marked_range"],
+        by_note["split-across-new-cuts", 1]["marked_range"]]
+    # Where a marker is drawn is not what it is read as: pile every marker
+    # of the old cut onto one frame and the plan does not change.
+    drifted = copy.deepcopy(document)
+    for item in track(drifted, 1)["markers"]:
+        if origin_key(item) is not None:
+            item["marked_range"] = time_range(0, 1, 24)
+    write(paths[0], drifted)
+    assert invoke("plan", paths) == report
+    write(paths[0], document)
+    invoke("apply", [*paths, output], "EEXIST")
+
+    # Round three. The editor restores the very first cut; the application
+    # hands it over with all ten markers conformed by timecode. Every
+    # annotation, carried or read back, now finds its footage again.
+    conformed = copy.deepcopy(written)
+    track(conformed)["children"] = track(before)["children"]
+    restored = copy.deepcopy(before)
+    track(restored)["markers"] = copy.deepcopy(track(conformed)["markers"])
+    last = request(0, 0, report["carry"], from_markers=True)
+    paths = files(directory, conformed, restored, last)
+    final = invoke("plan", paths)
+    status.update(verify_report(conformed, restored, last, final, imported_notes(conformed, 0)))
+    assert final["held"] == [] and final["carry"] == []
+    # Every piece here is a single one, so the annotation names its transfer.
+    # A marker read back appends the piece to the id of the annotation that
+    # exported it, so an annotation that keeps travelling is named by its
+    # path: "entire-old#0#0" is piece 0 of "entire-old#0".
+    assert all(t["piece"] == 0 for t in final["transfers"]) and len(final["transfers"]) == 18
+    placed = {t["note_id"]: (t["placement"]["clip"], t["placement"]["range"]["start"])
+              for t in final["transfers"]}
+    assert placed == {
+        "entire-old#2#0": (0, 4), "entire-old#3#0": (0, 5), "entire-old#3#1": (0, 7),
+        "entire-old#4#0": (0, 8), "entire-old#7#0": (3, 16), "entire-old#8#0": (3, 17),
+        "repeat-choice#0#0": (0, 4), "split-across-new-cuts#1#0": (0, 4),
+        "split-across-new-cuts#2#0": (0, 5), "repeat-choice#0": (0, 4),
+        "split-across-new-cuts#1": (0, 4), "split-across-new-cuts#2": (0, 5), "round-two#0": (0, 2),
+        "entire-old#0#0": (0, 0), "entire-old#1#0": (0, 2), "entire-old#5#0": (1, 10),
+        "cut-frame#0#0": (1, 10), "split-across-new-cuts#0#0": (0, 3)}
+    output = directory / "round-three.otio"
+    assert invoke("apply", [*paths, output]) == final
+    verify_export(restored, last, final, output, otio, imported_notes(conformed, 0))
+    assert len(track(json.loads(output.read_text(encoding="utf-8")))["markers"]) == 19
+
+    # Safeguards. The flag is a boolean; a marker is read once; a marker
+    # that records no footage is refused rather than read by timecode; and
+    # restating a read-back annotation under an id already in use, or by
+    # hand against a cut that still carries its copy, is refused too.
+    paths = files(directory, document, third, second)
+    write(paths[0], document)
+    for bad, error in [
+        (dict(second, from_markers="yes"), "request.from_markers: expected a boolean"),
+        (dict(second, notes=[*second["notes"], dict(
+            id="cut-frame#0", text="twice", media=b, source=dict(start=100, stop=101))]),
+         "annotation id is empty or repeated: cut-frame#0"),
+        (request(1, 0, [("cut-frame", 0, 1)]), "an exported marker already exists for cut-frame"),
+    ]:
+        write(paths[2], bad)
+        if "already exists" in error:
+            invoke("apply", [*paths, directory / "no.otio"], error)
+            assert not (directory / "no.otio").exists()
+        else:
+            invoke("plan", paths, error)
+    twice = copy.deepcopy(document)
+    track(twice, 1)["markers"].append(copy.deepcopy(by_note["cut-frame", 0]))
+    legacy = copy.deepcopy(document)
+    for item in track(legacy, 1)["markers"]:
+        if origin_key(item) == ("cut-frame", 0):
+            del item["metadata"]["moon_reconform"]["media"], item["metadata"]["moon_reconform"]["source"]
+    for bad, error in [(twice, "repeats the marker for cut-frame#0 at position 2"),
+                       (legacy, "selected track marker 2: records no footage")]:
+        write(paths[0], bad)
+        write(paths[2], second)
+        invoke("plan", paths, error)
+    write(paths[0], document)
+    return status
+
+
 def fetch_fixture():
     source = Request(FIXTURE, headers={"User-Agent": "MoonReConform-verification/0.1"})
     for attempt in range(3):
@@ -450,6 +623,8 @@ def main():
         print(f"160 source-anchored notes on the same cuts: {dict(sourced)}")
         print("Carried held notes, source-anchor safeguards and OTIO export: "
               f"{dict(verify_sources(work, opentimelineio))}")
+        print("Three review rounds, read-back markers, superseded copies and safeguards: "
+              f"{dict(verify_rounds(work, opentimelineio))}")
         if args.live_fixture:
             print("ElFuente 60 fps metadata, 1430 to 1036 frames, "
                   f"3 transfers, 2 held: {dict(verify_real(work, opentimelineio))}")

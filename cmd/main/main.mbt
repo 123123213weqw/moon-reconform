@@ -83,7 +83,19 @@ fn main {
       track_index=request.new_track,
       fps=request.fps,
     )
-    let reports = @core.plan(before, after, request.notes)
+    // Annotations the reviewer wrote come first; the markers the old cut
+    // already carries follow in track order.
+    let notes = request.notes.copy()
+    if request.from_markers {
+      for note in @core.read_notes_from_markers(
+        old_json,
+        track_index=request.old_track,
+        fps=request.fps,
+      ) {
+        notes.push(note)
+      }
+    }
+    let reports = @core.plan(before, after, notes)
     let resolution = @core.resolve(reports, request.selections)
     if applying {
       let exported = @core.with_markers(

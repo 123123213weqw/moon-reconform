@@ -45,7 +45,11 @@ test "request rejects unknown fields by name at every level" {
 
   let selection = base_request()
   selection["notes"] = Json::array([
-    note_object({ "id": Json("n1"), "text": Json("t"), "start": Json::number(4.0) }),
+    note_object({
+      "id": Json("n1"),
+      "text": Json("t"),
+      "start": Json::number(4.0),
+    }),
   ])
   selection["selections"] = Json::array([
     Json::object({
@@ -61,7 +65,11 @@ test "request rejects unknown fields by name at every level" {
 test "request keeps the documented shapes" {
   let request = base_request()
   request["notes"] = Json::array([
-    note_object({ "id": Json("n1"), "text": Json("t"), "start": Json::number(4.0) }),
+    note_object({
+      "id": Json("n1"),
+      "text": Json("t"),
+      "start": Json::number(4.0),
+    }),
     note_object({
       "id": Json("n2"),
       "text": Json("t"),
@@ -76,6 +84,21 @@ test "request keeps the documented shapes" {
   assert_eq(parsed.notes[0].range.stop, 5L)
   assert_eq(parsed.notes[1].range.length(), 3L)
   assert_eq(parsed.selections.length(), 0)
+  assert_eq(parsed.from_markers, false)
+}
+
+///|
+test "from_markers is a flag, not a string" {
+  let flagged = base_request()
+  flagged["from_markers"] = Json::boolean(true)
+  assert_eq(read_request(Json::object(flagged)).from_markers, true)
+  flagged["from_markers"] = Json::boolean(false)
+  assert_eq(read_request(Json::object(flagged)).from_markers, false)
+  // A quoted flag would otherwise read as silently off.
+  flagged["from_markers"] = Json("yes")
+  assert_eq(request_error(flagged), "request.from_markers: expected a boolean")
+  flagged["from_markers"] = Json::number(1.0)
+  assert_eq(request_error(flagged), "request.from_markers: expected a boolean")
 }
 
 ///|

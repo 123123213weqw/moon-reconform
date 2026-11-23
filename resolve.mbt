@@ -11,6 +11,8 @@ pub(all) struct Transfer {
   text : String
   piece : Int32
   placement : Placement
+  /// The marker the annotation was read back from, if it was.
+  origin : (String, Int32)?
 }
 
 ///|
@@ -74,6 +76,7 @@ pub fn resolve(
           text: note.text,
           piece: i,
           placement,
+          origin: note.origin,
         })
       }
     }
@@ -116,6 +119,7 @@ pub fn carried(
             text: report.note.text,
             range: source,
             media: Some(key),
+            origin: None,
           })
         }
       }
