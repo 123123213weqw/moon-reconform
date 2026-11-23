@@ -12,10 +12,16 @@ pub(all) enum Shot {
 }
 
 ///|
+/// A review annotation. `range` is in frames of the old track, or in
+/// frames of the source media named by `media` when the annotation is
+/// anchored to the footage itself. A source-anchored annotation needs
+/// nothing from the old cut, so it can follow the footage into any later
+/// version.
 pub(all) struct Note {
   id : String
   text : String
   range : Span
+  media : String?
 }
 
 ///|
@@ -34,7 +40,9 @@ pub(all) enum PieceKind {
 
 ///|
 pub(all) struct Piece {
-  old : Span
+  /// The piece's range on the old track; absent for a source-anchored
+  /// annotation, which never had a position on the old cut.
+  old : Span?
   media : String?
   source : Span?
   candidates : Array[Placement]

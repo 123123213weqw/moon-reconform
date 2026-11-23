@@ -60,14 +60,44 @@ pub fn read_request(value : Json) -> Request raise ReconformError {
   for value in input {
     let note = object(value, "annotation")
     let id = field_string(note, "id", "annotation")
-    fields_only(note, ["id", "text", "start", "stop"], "annotation " + id)
+    fields_only(note, ["id", "text", "start", "stop", "media", "source"], "annotation " + id)
     let text = field_string(note, "text", "annotation")
-    let start = integer_field(note, "start", id)
-    let stop = match note.get("stop") {
-      Some(value) => exact_integer(value, id + ".stop")
-      None => add_frames(start, 1L)
+    // An annotation is anchored either to the old track, by start and
+    // stop, or to source media, by media and source. The two never mix.
+    let (range, media) = match note.get("media") {
+      None => {
+        if note.contains("source") {
+          raise Invalid("annotation " + id + ": source requires media")
+        }
+        let start = integer_field(note, "start", id)
+        let stop = match note.get("stop") {
+          Some(value) => exact_integer(value, id + ".stop")
+          None => add_frames(start, 1L)
+        }
+        let range = { start, stop, }
+        (range, None)
+      }
+      Some(value) => {
+        if note.contains("start") || note.contains("stop") {
+          raise Invalid(
+            "annotation " + id +
+            ": media and source cannot combine with start and stop",
+          )
+        }
+        let key = string(value, id + ".media")
+        if key.length() == 0 {
+          raise Invalid("annotation " + id + ": media is empty")
+        }
+        let context = id + ".source"
+        let source = object(required(note, "source", id), context)
+        fields_only(source, ["start", "stop"], context)
+        let start = integer_field(source, "start", context)
+        let stop = integer_field(source, "stop", context)
+        let range = { start, stop, }
+        (range, Some(key))
+      }
     }
-    notes.push({ id, text, range: { start, stop, }, })
+    notes.push({ id, text, range, media, })
   }
   let selections = []
   if fields.get("selections") is Some(value) {
@@ -115,7 +145,10 @@ fn piece_json(piece : Piece) -> Json {
     GapPiece => "gap"
   }
   Json::object({
-    "old": span_json(piece.old),
+    "old": match piece.old {
+      Some(span) => span_json(span)
+      None => Json::null()
+    },
     "media": match piece.media {
       Some(key) => Json(key)
       None => Json::null()
@@ -130,6 +163,22 @@ fn piece_json(piece : Piece) -> Json {
 }
 
 ///|
+fn carry_json(note : Note) -> Json {
+  guard note.media is Some(key) else {
+    abort("carried annotations are anchored to source media")
+  }
+  Json::object({
+    "id": Json(note.id),
+    "text": Json(note.text),
+    "media": Json(key),
+    "source": span_json(note.range),
+  })
+}
+
+///|
+/// The report names each annotation with its anchor, so `range` reads as
+/// old-track frames when `media` is null and as source frames otherwise.
+/// `carry` restates every held annotation for the next request.
 pub fn report_json(
   before : Timeline,
   after : Timeline,
@@ -144,6 +193,11 @@ pub fn report_json(
       reports.map(report => {
         Json::object({
           "id": Json(report.note.id),
+          "text": Json(report.note.text),
+          "media": match report.note.media {
+            Some(key) => Json(key)
+            None => Json::null()
+          },
           "range": span_json(report.note.range),
           "pieces": Json::array(report.pieces.map(piece_json)),
         })
@@ -159,5 +213,6 @@ pub fn report_json(
         })
       }),
     ),
+    "carry": Json::array(carried(reports, resolution).map(carry_json)),
   })
 }

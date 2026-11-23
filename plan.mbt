@@ -6,8 +6,10 @@ priv struct Endpoint {
 }
 
 ///|
+/// `old` is the piece's range on the old cut, or absent for an annotation
+/// that was anchored to source media and never had one.
 fn media_pieces(
-  old : Span,
+  old : Span?,
   source : Span,
   key : String,
   matches : Array[LocatedShot],
@@ -55,11 +57,16 @@ fn media_pieces(
       1 => Unique
       _ => Ambiguous
     }
+    let old_piece = match old {
+      Some(anchor) =>
+        Some({
+          start: anchor.start + (from - source.start),
+          stop: anchor.start + (to - source.start),
+        })
+      None => None
+    }
     result.push({
-      old: {
-        start: old.start + (from - source.start),
-        stop: old.start + (to - source.start),
-      },
+      old: old_piece,
       media: Some(key),
       source: Some({ start: from, stop: to, }),
       candidates,
@@ -72,7 +79,9 @@ fn media_pieces(
 
 ///|
 /// Partition every annotation in old timeline order. Repeated source frames
-/// emit all new placements in ascending child-index order.
+/// emit all new placements in ascending child-index order. An annotation
+/// with `media` set is anchored to source frames and needs nothing from the
+/// old cut, which is how a held annotation travels to the next round.
 pub fn plan(
   before : Timeline,
   after : Timeline,
@@ -92,45 +101,71 @@ pub fn plan(
     }
     ids[note.id] = ()
     note.range.checked("annotation " + note.id)
-    if note.range.stop > before.duration() {
-      raise Invalid(
-        "annotation " + note.id + " extends beyond the old timeline",
-      )
-    }
     let pieces = []
-    for i = before.first_shot(note.range.start)
-        i < before.shots.length() &&
-       before.shots[i].timeline.start < note.range.stop
-        i = i + 1 {
-      let shot = before.shots[i]
-      guard intersection(shot.timeline, note.range) is Some(old) else {
-        continue
-      }
-      match shot.media {
-        None => {
-          report_budget.val -= 1
-          if report_budget.val < 0 {
-            raise Limit("report piece and candidate budget exceeded")
-          }
-          pieces.push({
-            old,
-            media: None,
-            source: None,
-            candidates: [],
-            kind: GapPiece,
-          })
+    match note.media {
+      Some(key) => {
+        // An empty key matches no clip, so the annotation would be
+        // reported deleted for a reason that is a typo rather than an edit.
+        if key.length() == 0 {
+          raise Invalid("annotation " + note.id + ": media key is empty")
         }
-        Some(key) => {
-          let start = source_span(shot).start +
-            (old.start - shot.timeline.start)
-          let source = { start, stop: start + old.length(), }
-          let matches = match index.get(key) {
-            Some(group) => group.overlapping(source, search_budget)
-            None => []
+        let matches = match index.get(key) {
+          Some(group) => group.overlapping(note.range, search_budget)
+          None => []
+        }
+        for piece in media_pieces(None, note.range, key, matches, report_budget) {
+          pieces.push(piece)
+        }
+      }
+      None => {
+        if note.range.stop > before.duration() {
+          raise Invalid(
+            "annotation " + note.id + " extends beyond the old timeline",
+          )
+        }
+        let mut i = before.first_shot(note.range.start)
+        while
+          i < before.shots.length() &&
+          before.shots[i].timeline.start < note.range.stop {
+          let shot = before.shots[i]
+          guard intersection(shot.timeline, note.range) is Some(old) else {
+            i += 1
+            continue
           }
-          for piece in media_pieces(old, source, key, matches, report_budget) {
-            pieces.push(piece)
+          match shot.media {
+            None => {
+              report_budget.val -= 1
+              if report_budget.val < 0 {
+                raise Limit("report piece and candidate budget exceeded")
+              }
+              pieces.push({
+                old: Some(old),
+                media: None,
+                source: None,
+                candidates: [],
+                kind: GapPiece,
+              })
+            }
+            Some(key) => {
+              let start = source_span(shot).start +
+                (old.start - shot.timeline.start)
+              let source = { start, stop: start + old.length(), }
+              let matches = match index.get(key) {
+                Some(group) => group.overlapping(source, search_budget)
+                None => []
+              }
+              for piece in media_pieces(
+                Some(old),
+                source,
+                key,
+                matches,
+                report_budget,
+              ) {
+                pieces.push(piece)
+              }
+            }
           }
+          i += 1
         }
       }
     }

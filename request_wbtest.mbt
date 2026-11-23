@@ -77,3 +77,83 @@ test "request keeps the documented shapes" {
   assert_eq(parsed.notes[1].range.length(), 3L)
   assert_eq(parsed.selections.length(), 0)
 }
+
+///|
+test "source-anchored annotations parse alone and refuse a second anchor" {
+  let request = base_request()
+  request["notes"] = Json::array([
+    note_object({
+      "id": Json("s1"),
+      "text": Json("check the trimmed head"),
+      "media": Json("file:///shoot/A.mov"),
+      "source": Json::object({
+        "start": Json::number(30.0),
+        "stop": Json::number(33.0),
+      }),
+    }),
+  ])
+  let parsed = read_request(Json::object(request))
+  assert_eq(parsed.notes[0].media, Some("file:///shoot/A.mov"))
+  assert_eq(parsed.notes[0].range.start, 30L)
+  assert_eq(parsed.notes[0].range.stop, 33L)
+
+  let twice = base_request()
+  twice["notes"] = Json::array([
+    note_object({
+      "id": Json("s1"),
+      "text": Json("t"),
+      "start": Json::number(4.0),
+      "media": Json("file:///shoot/A.mov"),
+      "source": Json::object({
+        "start": Json::number(30.0),
+        "stop": Json::number(33.0),
+      }),
+    }),
+  ])
+  assert_eq(
+    request_error(twice),
+    "annotation s1: media and source cannot combine with start and stop",
+  )
+
+  let orphan = base_request()
+  orphan["notes"] = Json::array([
+    note_object({
+      "id": Json("s1"),
+      "text": Json("t"),
+      "start": Json::number(4.0),
+      "source": Json::object({
+        "start": Json::number(30.0),
+        "stop": Json::number(33.0),
+      }),
+    }),
+  ])
+  assert_eq(request_error(orphan), "annotation s1: source requires media")
+
+  let typo = base_request()
+  typo["notes"] = Json::array([
+    note_object({
+      "id": Json("s1"),
+      "text": Json("t"),
+      "media": Json("file:///shoot/A.mov"),
+      "source": Json::object({
+        "start": Json::number(30.0),
+        "end": Json::number(33.0),
+      }),
+    }),
+  ])
+  assert_eq(request_error(typo), "s1.source: unknown field end")
+
+  let empty = base_request()
+  empty["notes"] = Json::array([
+    note_object({
+      "id": Json("s1"),
+      "text": Json("t"),
+      "media": Json(""),
+      "source": Json::object({
+        "start": Json::number(30.0),
+        "stop": Json::number(33.0),
+      }),
+    }),
+  ])
+  assert_eq(request_error(empty), "annotation s1: media is empty")
+}

@@ -90,3 +90,36 @@ pub fn resolve(
   }
   { transfers, held, }
 }
+
+///|
+/// The held annotations restated for the next cut. A held annotation has
+/// no place on the new timeline, so it cannot travel by frame number; what
+/// survives is the footage it pointed at. Every held piece that has source
+/// frames becomes one annotation anchored to those frames and named
+/// `<id>#<piece>`, ready to paste into the next request's `notes`. Pieces on
+/// old-track black have no footage and are left out.
+pub fn carried(
+  reports : Array[NoteReport],
+  resolution : Resolution,
+) -> Array[Note] {
+  let held : Map[String, Unit] = Map([])
+  for id in resolution.held {
+    held[id] = ()
+  }
+  let notes = []
+  for report in reports {
+    if held.contains(report.note.id) {
+      for i, piece in report.pieces {
+        if piece.media is Some(key) && piece.source is Some(source) {
+          notes.push({
+            id: report.note.id + "#" + i.to_string(),
+            text: report.note.text,
+            range: source,
+            media: Some(key),
+          })
+        }
+      }
+    }
+  }
+  notes
+}

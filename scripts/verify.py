@@ -72,11 +72,14 @@ def track(document, index=0):
     return document["tracks"]["children"][index]
 
 
-def request(before, after, rows, fps=24, choices=()):
+def request(before, after, rows, fps=24, choices=(), **extra):
+    """Rows are (id, start, stop) old-track notes, or whole note dicts such
+    as the carried ones, which pass through unchanged."""
     return dict(fps=fps, old_track=before, new_track=after,
-                notes=[dict(id=key, text="审阅 " + key, start=start, **(
-                    {} if stop is None else dict(stop=stop)
-                )) for key, start, stop in rows], selections=list(choices))
+                notes=[row if isinstance(row, dict) else dict(
+                    id=row[0], text="审阅 " + row[0], start=row[1], **(
+                        {} if row[2] is None else dict(stop=row[2])
+                    )) for row in rows], selections=list(choices), **extra)
 
 
 def write(path, value):
@@ -122,7 +125,7 @@ def frames(document, index):
 
 
 def verify_report(before, after, notes, report):
-    """Assert complete conservation and each ordered destination for every source frame."""
+    """Assert complete conservation and each ordered destination for every anchored frame."""
     old = frames(before, notes["old_track"])
     new = frames(after, notes["new_track"])
     assert (report["old_duration"], report["new_duration"]) == (len(old), len(new))
@@ -131,20 +134,35 @@ def verify_report(before, after, notes, report):
         if media is not None:
             destinations[media, source].append((child, target_frame))
     choices = {(r["note_id"], r["piece"]): r["clip"] for r in notes["selections"]}
-    expected_held, expected_transfers = [], []
+    expected_held, expected_transfers, expected_carry = [], [], []
     statuses = Counter()
     assert len(report["notes"]) == len(notes["notes"])
     for note, summary in zip(notes["notes"], report["notes"]):
-        start = note["start"]
-        stop = note.get("stop", start + 1)
-        assert summary["id"] == note["id"] and summary["range"] == dict(start=start, stop=stop)
+        # A note is anchored to the old track by start and stop, or to
+        # source footage by media and source. Either way it is a run of
+        # frames to look up, one destination table per anchor.
+        anchored = note.get("media")
+        if anchored is None:
+            start = note["start"]
+            stop = note.get("stop", start + 1)
+        else:
+            start, stop = note["source"]["start"], note["source"]["stop"]
+        assert summary["id"] == note["id"] and summary["text"] == note["text"]
+        assert summary["media"] == anchored
+        assert summary["range"] == dict(start=start, stop=stop)
         cursor, proposed = start, []
         for piece_index, piece in enumerate(summary["pieces"]):
-            at, end = piece["old"]["start"], piece["old"]["stop"]
+            if anchored is None:
+                span = piece["old"]
+            else:
+                span = piece["source"]
+                assert piece["old"] is None, piece
+            at, end = span["start"], span["stop"]
             assert cursor == at and cursor < end <= stop, piece
             expected_children = set()
             for frame in range(at, end):
-                child, media, source = old[frame]
+                child, media, source = (old[frame] if anchored is None
+                                        else (None, anchored, frame))
                 expected_children.add(child)
                 targets = destinations[media, source]
                 statuses[piece["status"]] += 1
@@ -159,7 +177,8 @@ def verify_report(before, after, notes, report):
                 assert [
                     (c["clip"], c["range"]["start"] + frame - at) for c in piece["candidates"]
                 ] == targets
-            assert len(expected_children) == 1, "the report crossed an old edit boundary"
+            if anchored is None:
+                assert len(expected_children) == 1, "the report crossed an old edit boundary"
             assert all(c["range"]["stop"] - c["range"]["start"] == end - at
                        for c in piece["candidates"])
             cursor = end
@@ -173,7 +192,15 @@ def verify_report(before, after, notes, report):
             expected_transfers.extend(proposed)
         else:
             expected_held.append(note["id"])
+            # What a held note leaves behind is its footage: one source note
+            # per piece that has any, named after the note and the piece.
+            for piece_index, piece in enumerate(summary["pieces"]):
+                if piece["media"] is not None:
+                    expected_carry.append(dict(
+                        id=f'{note["id"]}#{piece_index}', text=note["text"],
+                        media=piece["media"], source=piece["source"]))
     assert report["held"] == expected_held and report["transfers"] == expected_transfers
+    assert report["carry"] == expected_carry
     return statuses
 
 
@@ -278,7 +305,10 @@ def verify_demo(directory, otio):
 
 def verify_generated(directory):
     rng = random.Random(301827)
-    total = Counter()
+    # A second stream keeps the timelines and the 480 notes the published
+    # sample, whatever the source-anchored notes draw.
+    footage = random.Random(71903)
+    total, sourced = Counter(), Counter()
     for _ in range(40):
         seqs = [
             [clip(rng.choice(["a", "b", "c", "d"]), rng.randrange(12), rng.randrange(1, 11), 24)
@@ -292,8 +322,62 @@ def verify_generated(directory):
                                for i, start in enumerate(positions)])
         report = invoke("plan", files(directory, before, after, notes))
         total.update(verify_report(before, after, notes, report))
+        # Source-anchored notes on the same pair of cuts: footage that may
+        # be gone, present once, or repeated.
+        rows = []
+        for i in range(4):
+            key, start = footage.choice(["a", "b", "c", "d", "zz"]), footage.randrange(14)
+            rows.append(dict(id=f"s{i}", text="源素材 " + key, media=key,
+                             source=dict(start=start, stop=footage.randrange(start + 1, 15))))
+        anchored = request(0, 0, rows)
+        sourced.update(
+            verify_report(before, after, anchored, invoke("plan", files(directory, before, after, anchored))))
     assert set(total) == {"ambiguous", "unique", "deleted", "gap"}
-    return total
+    assert set(sourced) == {"ambiguous", "unique", "deleted"}
+    return total, sourced
+
+
+def verify_sources(directory, otio):
+    """Held notes travel to the next cut by footage, with no old-track position."""
+    before, after, notes = demo()
+    first = invoke("plan", files(directory, before, after, notes))
+    verify_report(before, after, notes, first)
+    # "old-gap" sat on black and has no footage, so nothing carries it;
+    # every held piece of "entire-old" that has footage is restated once.
+    assert [note["id"] for note in first["carry"]] == [
+        f"entire-old#{i}" for i in (0, 1, 2, 3, 4, 5, 7, 8)]
+    second = request(0, 1, first["carry"],
+                     choices=[dict(note_id="entire-old#2", piece=0, clip=3)])
+    paths = files(directory, before, after, second)
+    report = invoke("plan", paths)
+    status = verify_report(before, after, second, report)
+    # Against the same cut the footage is where it was: what was deleted
+    # stays held, the rest lands, and the ambiguous piece needs its choice.
+    assert report["held"] == ["entire-old#0", "entire-old#4", "entire-old#7"]
+    assert len(report["transfers"]) == 5
+    assert [note["id"] for note in report["carry"]] == [
+        "entire-old#0#0", "entire-old#4#0", "entire-old#7#0"]
+    output = directory / "carried.otio"
+    invoke("apply", [*paths, output])
+    verify_export(after, second, report, output, otio)
+    # Each anchor stands alone, and the request is still read strictly.
+    mixed = copy.deepcopy(second)
+    mixed["notes"][0]["start"] = 0
+    write(paths[2], mixed)
+    invoke("plan", paths, "media and source cannot combine with start and stop")
+    orphan = copy.deepcopy(second)
+    del orphan["notes"][0]["media"]
+    write(paths[2], orphan)
+    invoke("plan", paths, "source requires media")
+    typo = copy.deepcopy(second)
+    typo["notes"][0]["source"]["end"] = typo["notes"][0]["source"].pop("stop")
+    write(paths[2], typo)
+    invoke("plan", paths, "entire-old#0.source: unknown field end")
+    empty = copy.deepcopy(second)
+    empty["notes"][0]["media"] = ""
+    write(paths[2], empty)
+    invoke("plan", paths, "media is empty")
+    return status
 
 
 def fetch_fixture():
@@ -361,7 +445,11 @@ def main():
     with tempfile.TemporaryDirectory(prefix="reconform-", dir=parent) as work:
         work = Path(work)
         print(f"Demo differential oracle, safeguards and OTIO export: {dict(verify_demo(work, opentimelineio))}")
-        print(f"40 seeded timelines, 480 notes: {dict(verify_generated(work))}")
+        total, sourced = verify_generated(work)
+        print(f"40 seeded timelines, 480 notes: {dict(total)}")
+        print(f"160 source-anchored notes on the same cuts: {dict(sourced)}")
+        print("Carried held notes, source-anchor safeguards and OTIO export: "
+              f"{dict(verify_sources(work, opentimelineio))}")
         if args.live_fixture:
             print("ElFuente 60 fps metadata, 1430 to 1036 frames, "
                   f"3 transfers, 2 held: {dict(verify_real(work, opentimelineio))}")

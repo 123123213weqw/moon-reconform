@@ -6,6 +6,8 @@ import {
 }
 
 // Values
+pub fn carried(Array[NoteReport], Resolution) -> Array[Note]
+
 pub fn plan(Timeline, Timeline, Array[Note]) -> Array[NoteReport] raise ReconformError
 
 pub fn read_otio(@json.Json, track_index~ : Int32, fps~ : Int32) -> Timeline raise ReconformError
@@ -29,6 +31,7 @@ pub(all) struct Note {
   id : String
   text : String
   range : Span
+  media : String?
 }
 
 pub(all) struct NoteReport {
@@ -37,7 +40,7 @@ pub(all) struct NoteReport {
 }
 
 pub(all) struct Piece {
-  old : Span
+  old : Span?
   media : String?
   source : Span?
   candidates : Array[Placement]
