@@ -102,6 +102,10 @@ test "large exact frames need only one interval and overflowing sums fail" {
     error => Err(error)
   }
   assert_true(duplicate is Err(Invalid(_)))
+  // A frame is printed with every digit. A double happens to hold these
+  // exactly, but the printed text is what a later request reads back.
+  assert_eq(frame_json(max_frames).stringify(), "9007199254740991")
+  assert_eq(frame_json(4503599627370496L + 7L).stringify(), "4503599627370503")
 }
 
 ///|

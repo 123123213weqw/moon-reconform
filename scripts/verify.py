@@ -105,23 +105,85 @@ def invoke(mode, paths, error=None):
     return result
 
 
+def spans(document, index):
+    """The selected track as intervals, read from the document alone:
+    (child, track start, track stop, media, first source frame). No frame
+    is enumerated, so a cut 2^51 frames long costs the same as one of 20."""
+    result, at = [], 0
+    for child, item in enumerate(track(document, index)["children"]):
+        outer = item["source_range"]
+        if item["OTIO_SCHEMA"] == "Gap.1":
+            length = int(outer["duration"]["value"])
+            result.append((child, at, at + length, None, None))
+        else:
+            reference = (
+                item["media_reference"] if item["OTIO_SCHEMA"] == "Clip.1"
+                else item["media_references"][item["active_media_reference_key"]]
+            )
+            inner = outer or reference["available_range"]
+            first = int(inner["start_time"]["value"])
+            length = int(inner["duration"]["value"])
+            result.append((child, at, at + length, reference["target_url"], first))
+        at += length
+    return result
+
+
 def frames(document, index):
     """Enumerate source ownership directly, without reading any report intervals."""
     result = []
-    for child, item in enumerate(track(document, index)["children"]):
-        span = item["source_range"]
-        if item["OTIO_SCHEMA"] == "Gap.1":
-            result.extend([(child, None, None)] * int(span["duration"]["value"]))
-            continue
-        reference = (
-            item["media_reference"] if item["OTIO_SCHEMA"] == "Clip.1"
-            else item["media_references"][item["active_media_reference_key"]]
-        )
-        span = span or reference["available_range"]
-        start = int(span["start_time"]["value"])
-        stop = start + int(span["duration"]["value"])
-        result.extend((child, reference["target_url"], n) for n in range(start, stop))
+    for child, at, end, media, first in spans(document, index):
+        result.extend((child, media, None if first is None else first + n)
+                      for n in range(end - at))
     return result
+
+
+def planned(old, new, note):
+    """The pieces an annotation must produce, by plain interval arithmetic:
+    cut each run of footage wherever the set of new placements covering it
+    changes. Nothing here sweeps endpoints or keeps a budget, and every
+    number is a Python integer, so this holds where no walk could go."""
+    media = note.get("media")
+    runs = []
+    if media is None:
+        start = note["start"]
+        stop = note.get("stop", start + 1)
+        for _, at, end, key, first in old:
+            lo, hi = max(start, at), min(stop, end)
+            if lo < hi:
+                runs.append((dict(start=lo, stop=hi), key,
+                             None if first is None else
+                             dict(start=first + lo - at, stop=first + hi - at)))
+    else:
+        start, stop = note["source"]["start"], note["source"]["stop"]
+        runs.append((None, media, dict(start=start, stop=stop)))
+    pieces = []
+    for old_range, key, source in runs:
+        if source is None:
+            pieces.append(dict(old=old_range, media=None, source=None,
+                               status="gap", candidates=[]))
+            continue
+        hits = []
+        for child, at, end, other, first in new:
+            if other != key:
+                continue
+            lo, hi = max(source["start"], first), min(source["stop"], first + end - at)
+            if lo < hi:
+                hits.append((child, at, first, lo, hi))
+        cuts = sorted({source["start"], source["stop"],
+                       *[lo for *_, lo, hi in hits], *[hi for *_, lo, hi in hits]})
+        shift = 0 if old_range is None else old_range["start"] - source["start"]
+        for x, y in zip(cuts, cuts[1:]):
+            candidates = sorted(
+                (dict(clip=child, range=dict(start=at + x - first, stop=at + y - first))
+                 for child, at, first, lo, hi in hits if lo <= x and y <= hi),
+                key=lambda placement: placement["clip"])
+            pieces.append(dict(
+                old=None if old_range is None else dict(start=x + shift, stop=y + shift),
+                media=key, source=dict(start=x, stop=y),
+                status="deleted" if not candidates else
+                "unique" if len(candidates) == 1 else "ambiguous",
+                candidates=candidates))
+    return pieces
 
 
 def origin_key(item):
@@ -150,15 +212,58 @@ def imported_notes(document, index):
     return notes
 
 
-def verify_report(before, after, notes, report, imported=()):
-    """Assert complete conservation and each ordered destination for every anchored frame."""
-    old = frames(before, notes["old_track"])
-    new = frames(after, notes["new_track"])
-    assert (report["old_duration"], report["new_duration"]) == (len(old), len(new))
+def walk_frames(old, destinations, note, summary, statuses):
+    """Ground truth by enumeration: every frame of every piece is looked up
+    where it is, and the piece must say exactly what was found there."""
+    anchored = note.get("media")
+    for piece in summary["pieces"]:
+        span = piece["old"] if anchored is None else piece["source"]
+        if anchored is not None:
+            assert piece["old"] is None, piece
+        at, end = span["start"], span["stop"]
+        children = set()
+        for frame in range(at, end):
+            child, media, source = (old[frame] if anchored is None
+                                    else (None, anchored, frame))
+            children.add(child)
+            targets = destinations[media, source]
+            statuses[piece["status"]] += 1
+            if media is None:
+                assert piece["status"] == "gap" and piece["source"] is None
+            else:
+                assert piece["source"]["start"] + frame - at == source
+                assert piece["source"]["stop"] - piece["source"]["start"] == end - at
+                assert piece["status"] == ("deleted" if not targets else
+                                           "unique" if len(targets) == 1 else "ambiguous")
+            assert piece["media"] == media
+            assert [
+                (c["clip"], c["range"]["start"] + frame - at) for c in piece["candidates"]
+            ] == targets
+        if anchored is None:
+            assert len(children) == 1, "the report crossed an old edit boundary"
+        assert all(c["range"]["stop"] - c["range"]["start"] == end - at
+                   for c in piece["candidates"])
+
+
+def verify_report(before, after, notes, report, imported=(), walk=True):
+    """Assert every piece of every annotation two independent ways: against
+    an interval plan always, and frame by frame when the cuts are short
+    enough to enumerate. Held annotations, transfers and carry then follow
+    from the pieces, whichever way they were checked."""
+    old = spans(before, notes["old_track"])
+    new = spans(after, notes["new_track"])
+
+    def length(shots):
+        return sum(end - at for _, at, end, _, _ in shots)
+
+    assert (report["old_duration"], report["new_duration"]) == (length(old), length(new))
     destinations = defaultdict(list)
-    for target_frame, (child, media, source) in enumerate(new):
-        if media is not None:
-            destinations[media, source].append((child, target_frame))
+    if walk:
+        walked = frames(before, notes["old_track"])
+        assert len(walked) == length(old)
+        for target_frame, (child, media, source) in enumerate(frames(after, notes["new_track"])):
+            if media is not None:
+                destinations[media, source].append((child, target_frame))
     choices = {(r["note_id"], r["piece"]): r["clip"] for r in notes["selections"]}
     expected_held, expected_transfers, expected_carry = [], [], []
     statuses = Counter()
@@ -166,8 +271,7 @@ def verify_report(before, after, notes, report, imported=()):
     assert len(report["notes"]) == len(expected)
     for note, summary in zip(expected, report["notes"]):
         # A note is anchored to the old track by start and stop, or to
-        # source footage by media and source. Either way it is a run of
-        # frames to look up, one destination table per anchor.
+        # source footage by media and source.
         anchored = note.get("media")
         if anchored is None:
             start = note["start"]
@@ -178,38 +282,14 @@ def verify_report(before, after, notes, report, imported=()):
         assert summary["media"] == anchored
         assert summary["range"] == dict(start=start, stop=stop)
         assert summary["origin"] == note.get("origin")
+        assert summary["pieces"] == planned(old, new, note), note["id"]
         cursor, proposed = start, []
         for piece_index, piece in enumerate(summary["pieces"]):
-            if anchored is None:
-                span = piece["old"]
-            else:
-                span = piece["source"]
-                assert piece["old"] is None, piece
-            at, end = span["start"], span["stop"]
-            assert cursor == at and cursor < end <= stop, piece
-            expected_children = set()
-            for frame in range(at, end):
-                child, media, source = (old[frame] if anchored is None
-                                        else (None, anchored, frame))
-                expected_children.add(child)
-                targets = destinations[media, source]
+            if not walk:
                 statuses[piece["status"]] += 1
-                if media is None:
-                    assert piece["status"] == "gap" and piece["source"] is None
-                else:
-                    assert piece["source"]["start"] + frame - at == source
-                    assert piece["source"]["stop"] - piece["source"]["start"] == end - at
-                    assert piece["status"] == ("deleted" if not targets else
-                                                "unique" if len(targets) == 1 else "ambiguous")
-                assert piece["media"] == media
-                assert [
-                    (c["clip"], c["range"]["start"] + frame - at) for c in piece["candidates"]
-                ] == targets
-            if anchored is None:
-                assert len(expected_children) == 1, "the report crossed an old edit boundary"
-            assert all(c["range"]["stop"] - c["range"]["start"] == end - at
-                       for c in piece["candidates"])
-            cursor = end
+            span = piece["old"] if anchored is None else piece["source"]
+            assert cursor == span["start"] and cursor < span["stop"] <= stop, piece
+            cursor = span["stop"]
             picked = choices.get((note["id"], piece_index))
             options = piece["candidates"]
             if len(options) == 1 or picked is not None:
@@ -228,6 +308,8 @@ def verify_report(before, after, notes, report, imported=()):
                     expected_carry.append(dict(
                         id=f'{note["id"]}#{piece_index}', text=note["text"],
                         media=piece["media"], source=piece["source"]))
+        if walk:
+            walk_frames(walked, destinations, note, summary, statuses)
     assert report["held"] == expected_held and report["transfers"] == expected_transfers
     assert report["carry"] == expected_carry
     return statuses
@@ -246,7 +328,7 @@ def verify_export(after, notes, report, output, otio=None, imported=()):
     transferred = selected["markers"][len(kept):]
     assert len(transferred) == len(report["transfers"])
     names = {n["id"]: n["text"] for n in [*notes["notes"], *imported]}
-    new = frames(after, notes["new_track"])
+    new = spans(after, notes["new_track"])
     for emitted, change in zip(transferred, report["transfers"]):
         placement = change["placement"]
         span = placement["range"]
@@ -254,16 +336,15 @@ def verify_export(after, notes, report, output, otio=None, imported=()):
         assert emitted["marked_range"] == time_range(
             span["start"], span["stop"] - span["start"], notes["fps"]
         )
-        # The marker records the footage under its placement, enumerated
-        # frame by frame here rather than taken from the report.
-        under = new[span["start"]:span["stop"]]
-        assert len(under) == span["stop"] - span["start"] > 0
-        assert {child for child, _, _ in under} == {placement["clip"]}
-        media, first = under[0][1], under[0][2]
-        assert [source for _, _, source in under] == list(range(first, first + len(under)))
+        # The marker records the footage under its placement. That is read
+        # from the new cut's own intervals, never from the report, and
+        # works for a cut too long to enumerate.
+        under = [shot for shot in new if shot[1] <= span["start"] and span["stop"] <= shot[2]]
+        assert len(under) == 1 and under[0][0] == placement["clip"] and under[0][3] is not None
+        media, first = under[0][3], under[0][4] + span["start"] - under[0][1]
         assert emitted["metadata"]["moon_reconform"] == dict(
             note_id=change["note_id"], piece=change["piece"], target_child=placement["clip"],
-            media=media, source=dict(start=first, stop=first + len(under))
+            media=media, source=dict(start=first, stop=first + span["stop"] - span["start"])
         )
     selected["markers"] = kept
     expected = copy.deepcopy(after)
@@ -561,6 +642,113 @@ def verify_rounds(directory, otio):
     return status
 
 
+def verify_beyond_enumeration(directory, otio):
+    """Frame counts no walk could enumerate: footage near 2^53 and cuts 2^51
+    frames long, planned by the interval oracle alone and pinned by hand."""
+    a, b = "file:///shoot/A.mov", "file:///shoot/B.mov"
+    top, half, quarter = 2 ** 53 - 1, 2 ** 51, 2 ** 50
+    before = timeline([gap(half + 3, 24), clip(a, 2 ** 52 + 7, 20, 24), gap(5, 24),
+                       clip(b, top - 39, 20, 24)])
+    after = timeline([clip(b, top - 39, 4, 24), clip(a, 2 ** 52 + 12, 3, 24),
+                      gap(quarter, 24), clip(a, 2 ** 52 + 14, 4, 24)])
+    notes = request(0, 0, [
+        ("head", half + 8, half + 11), ("tail", half + 46, half + 48), ("last", half + 47, None),
+        ("black", half + 24, half + 26), ("across", half + 21, half + 30),
+        dict(id="far", text="源素材 A", media=a, source=dict(start=2 ** 52 + 16, stop=2 ** 52 + 18)),
+        ("whole", 0, half + 48),
+    ], choices=[dict(note_id="head", piece=1, clip=3)])
+    paths = files(directory, before, after, notes)
+    report = invoke("plan", paths)
+    status = verify_report(before, after, notes, report, walk=False)
+    assert set(status) == {"ambiguous", "unique", "deleted", "gap"}
+    assert (report["old_duration"], report["new_duration"]) == (half + 48, quarter + 11)
+    placed = {(t["note_id"], t["piece"]): (t["placement"]["clip"], t["placement"]["range"])
+              for t in report["transfers"]}
+    # By hand. The new cut runs B[0,4), A[4,7), 2^50 frames of black, then
+    # A again from 2^50 + 7. The head note is A[2^52+12, 2^52+15): its first
+    # two frames sit once, its last frame is the one the new cut repeats,
+    # and the choice takes the second copy. The far note is A[16,18), which
+    # only the second copy has.
+    assert placed == {
+        ("head", 0): (1, dict(start=4, stop=6)),
+        ("head", 1): (3, dict(start=quarter + 7, stop=quarter + 8)),
+        ("far", 0): (3, dict(start=quarter + 9, stop=quarter + 11)),
+    }
+    assert report["held"] == ["tail", "last", "black", "across", "whole"]
+    # By hand: the held notes leave one note per piece that has footage.
+    # "across" crosses A, black and B; "whole" has nine pieces, and its two
+    # on black, 0 and 6, leave nothing.
+    assert report["carry"] == [
+        dict(id="tail#0", text="审阅 tail", media=b, source=dict(start=top - 21, stop=top - 19)),
+        dict(id="last#0", text="审阅 last", media=b, source=dict(start=top - 20, stop=top - 19)),
+        dict(id="across#0", text="审阅 across", media=a,
+             source=dict(start=2 ** 52 + 25, stop=2 ** 52 + 27)),
+        dict(id="across#2", text="审阅 across", media=b,
+             source=dict(start=top - 39, stop=top - 37)),
+        dict(id="whole#1", text="审阅 whole", media=a,
+             source=dict(start=2 ** 52 + 7, stop=2 ** 52 + 12)),
+        dict(id="whole#2", text="审阅 whole", media=a,
+             source=dict(start=2 ** 52 + 12, stop=2 ** 52 + 14)),
+        dict(id="whole#3", text="审阅 whole", media=a,
+             source=dict(start=2 ** 52 + 14, stop=2 ** 52 + 15)),
+        dict(id="whole#4", text="审阅 whole", media=a,
+             source=dict(start=2 ** 52 + 15, stop=2 ** 52 + 18)),
+        dict(id="whole#5", text="审阅 whole", media=a,
+             source=dict(start=2 ** 52 + 18, stop=2 ** 52 + 27)),
+        dict(id="whole#7", text="审阅 whole", media=b,
+             source=dict(start=top - 39, stop=top - 35)),
+        dict(id="whole#8", text="审阅 whole", media=b,
+             source=dict(start=top - 35, stop=top - 19)),
+    ]
+    assert len(report["notes"][-1]["pieces"]) == 9
+    output = directory / "far.otio"
+    assert invoke("apply", [*paths, output]) == report
+    verify_export(after, notes, report, output, otio)
+    written = track(json.loads(output.read_text(encoding="utf-8")))["markers"]
+    assert [m["marked_range"]["start_time"]["value"] for m in written] == [
+        4, quarter + 7, quarter + 9]
+    assert written[1]["metadata"]["moon_reconform"]["source"] == dict(
+        start=2 ** 52 + 14, stop=2 ** 52 + 15)
+    # The last representable frame is a position like any other. A cut of
+    # exactly 2^53 - 1 frames ends with A[top - 3, top), and compared with
+    # itself every frame lands on itself, the last one included.
+    edge = timeline([gap(top - 3, 24), clip(a, top - 3, 3, 24)])
+    edge_notes = request(0, 0, [("last-but-one", top - 2, None), ("last", top - 1, None)])
+    edge_report = invoke("plan", files(directory, edge, edge, edge_notes))
+    verify_report(edge, edge, edge_notes, edge_report, walk=False)
+    assert edge_report["old_duration"] == top and edge_report["held"] == []
+    assert [t["placement"] for t in edge_report["transfers"]] == [
+        dict(clip=1, range=dict(start=top - 2, stop=top - 1)),
+        dict(clip=1, range=dict(start=top - 1, stop=top))]
+    # A frame further cannot even be named: its stop would pass 2^53 - 1.
+    off_end = request(0, 0, [("past-the-end", top, None)])
+    invoke("plan", files(directory, edge, edge, off_end), "timeline exceeds exact frame range")
+    # One step past it, in any notation, is refused rather than rounded.
+    for document, error in [
+        (timeline([clip(a, top - 5, 6, 24)]), "timeline exceeds exact frame range"),
+        (timeline([gap(top, 24), gap(1, 24)]), "timeline exceeds exact frame range"),
+        (timeline([clip(a, 2 ** 53, 1, 24)]), "expected a nonnegative exact integer"),
+    ]:
+        invoke("plan", files(directory, document, after, notes), error)
+    # The refusal loop reused these paths; put the real old cut back.
+    write(paths[0], before)
+    beyond = request(0, 0, [("over", half + 48, half + 49)])
+    write(paths[2], beyond)
+    invoke("plan", paths, "annotation over extends beyond the old timeline")
+    text = paths[0].read_text(encoding="utf-8")
+    attack = text.replace(f'"value": {top - 39}', f'"value": {top - 39}.0000000000000000001', 1)
+    assert attack != text
+    write(paths[2], notes)
+    paths[0].write_text(attack, encoding="utf-8")
+    invoke("plan", paths, "expected a nonnegative exact integer")
+    # The same number in exponent notation reads as the same frame.
+    exponent = text.replace(f'"value": {top - 39}', f'"value": {top - 39}e0', 1)
+    assert exponent != text
+    paths[0].write_text(exponent, encoding="utf-8")
+    assert invoke("plan", paths) == report
+    return status
+
+
 def fetch_fixture():
     source = Request(FIXTURE, headers={"User-Agent": "MoonReConform-verification/0.1"})
     for attempt in range(3):
@@ -633,6 +821,8 @@ def main():
               f"{dict(verify_sources(work, opentimelineio))}")
         print("Three review rounds, read-back markers, superseded copies and safeguards: "
               f"{dict(verify_rounds(work, opentimelineio))}")
+        print("Frame counts beyond enumeration, 2^51-frame cuts and footage near 2^53: "
+              f"{dict(verify_beyond_enumeration(work, opentimelineio))} (pieces)")
         if args.live_fixture:
             print("ElFuente 60 fps metadata, 1430 to 1036 frames, "
                   f"3 transfers, 2 held: {dict(verify_real(work, opentimelineio))}")
