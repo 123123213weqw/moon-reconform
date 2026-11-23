@@ -1,10 +1,12 @@
 name = "123123213weqw/moon_reconform"
 
-version = "0.2.0"
+version = "0.3.0"
 
 license = "Apache-2.0"
 
 description = "Exact-frame audit and transfer of review annotations across hard-cut OpenTimelineIO edits."
+
+keywords = [ "otio", "opentimelineio", "conform", "review", "markers", "timeline" ]
 
 repository = "https://github.com/123123213weqw/moon-reconform"
 
