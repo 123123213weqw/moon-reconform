@@ -49,13 +49,29 @@ extern "js" fn write_new(path : String, content : String) -> String? =
   #| }
 
 ///|
-fn read_json(path : String) -> Json raise {
+/// A failure of the command itself rather than a refusal from the core: a
+/// wrong invocation, an input that cannot be read, an output that cannot be
+/// written. The message is for the person at the terminal, so it names the
+/// file or the usage and never a source position.
+pub(all) suberror Command {
+  Arguments(String)
+  Input(String)
+  Output(String)
+}
+
+///|
+let usage : String =
+  #|usage: plan old.otio new.otio request.json
+  #|       apply old.otio new.otio request.json output.otio
+
+///|
+fn read_json(path : String) -> Json raise Command {
   guard read_input(path) is Some(text) else {
-    fail("cannot read a regular UTF-8 input file of at most 16 MB: " + path)
+    raise Input("cannot read a regular UTF-8 input file of at most 16 MB: " + path)
   }
   match @codec.parse(text) {
     Ok(value) => value
-    Err(error) => fail(path + ": " + error)
+    Err(error) => raise Input(path + ": " + error)
   }
 }
 
@@ -65,10 +81,12 @@ fn main {
     let args = @env.args()
     let planning = args.length() == 6 && args[2] == "plan"
     let applying = args.length() == 7 && args[2] == "apply"
+    if args.length() == 3 && (args[2] == "--help" || args[2] == "-h") {
+      println(usage)
+      return
+    }
     if !planning && !applying {
-      fail(
-        "usage: plan old.otio new.otio request.json | apply old.otio new.otio request.json output.otio",
-      )
+      raise Arguments(usage)
     }
     let old_json = read_json(args[3])
     let new_json = read_json(args[4])
@@ -106,10 +124,10 @@ fn main {
       )
       let content = match @codec.stringify(exported) {
         Ok(value) => value
-        Err(error) => fail("cannot encode OTIO output: " + error)
+        Err(error) => raise Output("cannot encode OTIO output: " + error)
       }
       if write_new(args[6], content) is Some(error) {
-        fail(error)
+        raise Output(error)
       }
     }
     println(@core.report_json(before, after, reports, resolution).stringify())
@@ -118,6 +136,7 @@ fn main {
       let message = match error {
         @core.Invalid(reason) => reason
         @core.Limit(reason) => reason
+        Arguments(reason) | Input(reason) | Output(reason) => reason
         _ => error.to_string()
       }
       println(

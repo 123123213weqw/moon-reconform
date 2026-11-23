@@ -93,15 +93,24 @@ def files(directory, before, after, notes):
     return paths
 
 
-def invoke(mode, paths, error=None):
-    proc = subprocess.run(["node", str(CLI), mode, *map(str, paths)], cwd=ROOT,
+def launch(*argv):
+    proc = subprocess.run(["node", str(CLI), *map(str, argv)], cwd=ROOT,
                           capture_output=True, encoding="utf-8", timeout=20)
+    assert not proc.stderr, proc.stderr
+    return proc
+
+
+def invoke(mode, paths, error=None):
+    proc = launch(mode, *paths)
     assert proc.stdout, (proc.returncode, proc.stderr)
     result = json.loads(proc.stdout)
     if error is None:
         assert proc.returncode == 0 and result["ok"], (result, proc.stderr)
     else:
         assert proc.returncode != 0 and result["ok"] is False and error in result["error"], result
+        # A refusal is for the person at the terminal: it names the document
+        # and the problem, never a position in this tool's own source.
+        assert "Failure(" not in result["error"] and ".mbt:" not in result["error"], result
     return result
 
 
@@ -749,6 +758,88 @@ def verify_beyond_enumeration(directory, otio):
     return status
 
 
+def verify_command(directory):
+    """The command's own failures: a wrong invocation, an input that cannot
+    be read, an output that cannot be written. Each answers with a status
+    whose whole message is checked, and nothing is written on a refusal."""
+    before, after, notes = demo()
+    paths = files(directory, before, after, notes)
+    usage = ("usage: plan old.otio new.otio request.json\n"
+             "       apply old.otio new.otio request.json output.otio")
+    unreadable = "cannot read a regular UTF-8 input file of at most 16 MB: "
+    checked = []
+
+    def refused(argv, message):
+        proc = launch(*argv)
+        assert proc.returncode == 1, (argv, proc.returncode)
+        assert json.loads(proc.stdout) == {"ok": False, "error": message}, proc.stdout
+        checked.append(message.split(":")[0])
+
+    for argv in ([], ["plan", *paths[:2]], ["frobnicate", *paths], ["Plan", *paths],
+                 ["plan", *paths, directory / "surplus.otio"]):
+        refused(argv, usage)
+    for flag in ("--help", "-h"):
+        proc = launch(flag)
+        assert proc.returncode == 0 and proc.stdout == usage + "\n", proc.stdout
+    baseline = invoke("plan", paths)
+    good = paths[0].read_bytes()
+
+    # Input that cannot be read as a document names the file and the rule.
+    for name in ("missing.otio", ""):
+        path = directory / name
+        refused(["plan", path, *paths[1:]], unreadable + str(path))
+    paths[0].write_bytes(b"\xff\xfe")
+    refused(["plan", *paths], unreadable + str(paths[0]))
+    # An empty file reads fine and fails to parse; the parser names it.
+    paths[0].write_bytes(b"")
+    refused(["plan", *paths], f"{paths[0]}: unexpected end")
+    # A document that reads but does not parse is refused by the parser,
+    # and the message still names the file first.
+    paths[0].write_bytes(good[:-1])
+    proc = launch("plan", *paths)
+    assert proc.returncode == 1
+    error = json.loads(proc.stdout)["error"]
+    assert error.startswith(f"{paths[0]}: ") and ".mbt:" not in error, error
+    checked.append("unreadable input")
+
+    # A byte-order mark is read, a repeated key is refused by name, and the
+    # size limit is exact: 16,000,000 bytes are read and one more is not.
+    paths[0].write_bytes(b"\xef\xbb\xbf" + good)
+    assert invoke("plan", paths) == baseline
+    twice = good.replace(b'"name": "Review"', b'"name": "Review", "name": "Other"', 1)
+    assert twice != good
+    paths[0].write_bytes(twice)
+    refused(["plan", *paths], f"{paths[0]}: duplicate key: name")
+    fat = copy.deepcopy(before)
+    fat["pad"] = ""
+    room = 16_000_000 - len(json.dumps(fat, ensure_ascii=False).encode())
+    fat["pad"] = "p" * room
+    assert paths[0].write_bytes(json.dumps(fat, ensure_ascii=False).encode()) == 16_000_000
+    assert invoke("plan", paths) == baseline
+    with paths[0].open("ab") as handle:
+        handle.write(b" ")
+    refused(["plan", *paths], unreadable + str(paths[0]))
+    checked += ["byte-order mark", "size limit"]
+
+    # Outputs: a directory that does not exist, a directory that does, and
+    # an input offered as its own result. The last never loses the input.
+    paths[0].write_bytes(good)
+    report = invoke("plan", paths)
+    nowhere = directory / "no-such-dir" / "out.otio"
+    refused(["apply", *paths, nowhere], f"cannot create OTIO output (ENOENT): {nowhere}")
+    folder = directory / "a-folder"
+    folder.mkdir()
+    refused(["apply", *paths, folder], f"cannot create OTIO output (EEXIST): {folder}")
+    refused(["apply", paths[0], paths[1], paths[2], paths[1]],
+            f"cannot create OTIO output (EEXIST): {paths[1]}")
+    assert paths[1].read_bytes() == json.dumps(after, ensure_ascii=False).encode()
+    assert not nowhere.exists() and list(folder.iterdir()) == []
+    output = directory / "command.otio"
+    assert invoke("apply", [*paths, output]) == report
+    checked.append("outputs")
+    return len(checked)
+
+
 def fetch_fixture():
     source = Request(FIXTURE, headers={"User-Agent": "MoonReConform-verification/0.1"})
     for attempt in range(3):
@@ -823,6 +914,8 @@ def main():
               f"{dict(verify_rounds(work, opentimelineio))}")
         print("Frame counts beyond enumeration, 2^51-frame cuts and footage near 2^53: "
               f"{dict(verify_beyond_enumeration(work, opentimelineio))} (pieces)")
+        print("The command's own failures, each message checked whole: "
+              f"{verify_command(work)} groups")
         if args.live_fixture:
             print("ElFuente 60 fps metadata, 1430 to 1036 frames, "
                   f"3 transfers, 2 held: {dict(verify_real(work, opentimelineio))}")
