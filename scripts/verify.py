@@ -1489,11 +1489,13 @@ def verify_samples(directory, otio):
         paths = [directory / "sample-old.otio", directory / "sample-new.otio", directory / "sample.json"]
         for path in paths[:2]:
             path.write_bytes(raw)
-        try:
-            otio.adapters.read_from_file(str(paths[0]))
-            library = otio
-        except Exception:  # the sample is written for a newer library than this
-            library = None
+        library = None  # the official library, when there is one and it reads the sample
+        if otio is not None:
+            try:
+                otio.adapters.read_from_file(str(paths[0]))
+                library = otio
+            except Exception:  # the sample is written for a newer library than this
+                library = None
         for index, wanted in sorted(expected.items()):
             notes = request(index, index, [], fps=fps)
             write(paths[2], notes)
@@ -1523,7 +1525,8 @@ def verify_samples(directory, otio):
                              "57896044618658097711785492504343953926634992332820282019728792003956564819968"):
                     assert re.search(r"(?<![0-9A-Za-z.+-])" + re.escape(kept) + r"(?![0-9A-Za-z.+-])", written), kept
                 assert "-Infinity" not in written and "Viel glück und hab spaß!" in written
-                assert otio.adapters.read_from_file(str(output)).tracks[0].duration().value == 24
+                if otio is not None:
+                    assert otio.adapters.read_from_file(str(output)).tracks[0].duration().value == 24
             else:
                 verify_export(document, notes, report, output, library)
             found = Counter(piece["status"] for note in report["notes"] for piece in note["pieces"])
