@@ -1395,6 +1395,143 @@ def verify_corners(directory, otio):
     return len(checked)
 
 
+# The OpenTimelineIO project's own sample files, at one commit and by hash.
+# They are what other tools really write: an export from Premiere, clips
+# with no media, transitions, nested sequences, effects, muted tracks, a
+# trimmed track, and numbers outside the JSON standard.
+SAMPLE_PIN = "f38b2cb6c9d22b91a82c129d5551d41910a3a1db"
+SAMPLES = {
+    "big_int.otio": "065de8d684cd8598d6d21f8915008ccadf74b7ab978587703bf47597a8c556a7",
+    "clip_example.otio": "b87fbdaf96561c4ba2b361c572b298a91aa2a73613e215402dd5ae400220b326",
+    "effects.otio": "2507d49a7c14b391116da515521bd087dee238fbb27b9a83faec0dc1ffeb151c",
+    "generator_reference_test.otio": "85c0a9eca537134ee75809820e6555e9cbec0ef64be5d1806c23cedf382a8c59",
+    "multiple_track.otio": "8cfcaa5f346a302a3e3c23ed03b35f85046c9d9a6a67e5c894652d814a0b5668",
+    "multitrack.otio": "8982f905993ca4c7113423e63fdd7d2eff69d56ed4659a080e3281b7e7f038e0",
+    "nested_example.otio": "2d11b95eb34522952b8b3d99ddac8935be6700649fd9726f6f2424bacd22ccd0",
+    "preflattened.otio": "553240152332819a8b0a7bb3ab0469ac9f91e075ffb2a24e3e975f7473770424",
+    "premiere_example.otio": "077bdb6e487a906db79cf0555aadfdf20e8ba6a8826ef2ee76a894377c08bc36",
+    "screening_example.otio": "d344ee732885c165f68d6f845e04aaf17d61de6cf8c75dd45519f460fca4d610",
+    "simple_cut.otio": "a85440060aa8b421fb7430dcf4c6d9a89a78b256198767afcfff1496ededf7eb",
+    "transition.otio": "976f608b6feb511ce6a1155d3d3c4703d51ea4c81a240a513d2cfc2939c3d246",
+    "transition_test.otio": "fe2a88668728386c1083cb964196e8966a5cc2062cfc022c7548fb43f21691da",
+}
+EFFECTS = "effects and retiming are outside the supported format"
+MUTED = "expected an enabled OTIO item"
+TRIMMED = "source_range trims a containing track or stack"
+MIXED = "RationalTime rate 15 differs from the request's 30 fps"
+READ = "read"
+# What the tool makes of every track of every sample: read at a frame rate,
+# or refused with these words. The numbers are not a target in themselves;
+# they record what the tool says to real files, so that a change in it is
+# a decision and not an accident. Each track that is read is also checked
+# by the oracle, and its export by the official library when that reads
+# the sample itself.
+EXPECTED_SAMPLES = {
+    "big_int.otio": (24, {0: (24, dict(unique=9))}),
+    "clip_example.otio": (24, {0: (22, dict(gap=8, transition=2, offline=1))}),
+    "effects.otio": (24, {
+        0: EFFECTS, 1: EFFECTS, 2: MUTED, 3: MUTED, 4: EFFECTS,
+        5: (1125, dict(gap=9)), 6: (1125, dict(gap=9)), 7: (1125, dict(gap=9)),
+        8: (1125, dict(gap=9)), 9: EFFECTS, 10: MUTED, 11: (1125, dict(gap=9)),
+        12: EFFECTS, 13: MUTED, 14: EFFECTS, 15: EFFECTS, 16: MUTED, 17: EFFECTS, 18: EFFECTS}),
+    "generator_reference_test.otio": (24, {0: "expected Track.1"}),
+    "multiple_track.otio": (24, {0: (19, dict(unique=10, gap=2)), 1: (16, dict(gap=6, unique=5)),
+                                 2: TRIMMED}),
+    "multitrack.otio": (24, {0: (3282, dict(offline=6, gap=3)), 1: (3282, dict(gap=9)),
+                             2: (3282, dict(gap=8, offline=1))}),
+    "nested_example.otio": (24, {0: EFFECTS}),
+    "preflattened.otio": (24, {0: (3282, dict(offline=7, gap=2))}),
+    # An export from Premiere. One clip's footage is given at 15 fps in a
+    # 30 fps sequence, which mixes rates; the rest is read, transitions and
+    # nested sequences included.
+    "premiere_example.otio": (30, {
+        0: MIXED,
+        1: (975, dict(gap=4, unique=3, nested=2)), 2: (956, dict(gap=4, offline=5)),
+        3: (1271, dict(gap=7, unique=2)), 4: (636, dict(gap=7, ambiguous=2)),
+        5: (930, dict(gap=6, unique=1, nested=2)), 6: (351, dict(gap=6, unique=3)),
+        7: (1271, dict(gap=7, unique=2))}),
+    "screening_example.otio": (24, {0: TRIMMED}),
+    "simple_cut.otio": (24, {0: (19, dict(unique=12))}),
+    "transition.otio": (24, {0: (24, dict(unique=11, transition=2))}),
+    "transition_test.otio": (24, {0: (210, dict(transition=8, offline=1))}),
+}
+
+
+def fetch_sample(name):
+    url = (f"https://raw.githubusercontent.com/AcademySoftwareFoundation/OpenTimelineIO/"
+           f"{SAMPLE_PIN}/tests/sample_data/{name}")
+    for attempt in range(3):
+        try:
+            with urlopen(Request(url, headers={"User-Agent": "MoonReConform-verification/0.1"}),
+                         timeout=10) as response:
+                data = response.read(4_000_001)
+        except (OSError, URLError):
+            if attempt == 2:
+                raise
+        else:
+            assert hashlib.sha256(data).hexdigest() == SAMPLES[name], f"pinned {name} hash mismatch"
+            return data
+
+
+def lenient(text):
+    """Parse JSON the way OpenTimelineIO does, with Inf, Infinity and NaN."""
+    return json.loads(re.sub(r"(?<![A-Za-z])Inf(?![A-Za-z])", "Infinity", text))
+
+
+def verify_samples(directory, otio):
+    """The OpenTimelineIO project's own sample files, track by track, each
+    held to what is recorded for it."""
+    verdicts = Counter()
+    for name, (fps, expected) in EXPECTED_SAMPLES.items():
+        raw = fetch_sample(name)
+        document = lenient(raw.decode("utf-8"))
+        assert len(document["tracks"]["children"]) == len(expected), name
+        paths = [directory / "sample-old.otio", directory / "sample-new.otio", directory / "sample.json"]
+        for path in paths[:2]:
+            path.write_bytes(raw)
+        try:
+            otio.adapters.read_from_file(str(paths[0]))
+            library = otio
+        except Exception:  # the sample is written for a newer library than this
+            library = None
+        for index, wanted in sorted(expected.items()):
+            notes = request(index, index, [], fps=fps)
+            write(paths[2], notes)
+            proc = launch("plan", *paths)
+            result = json.loads(proc.stdout)
+            if isinstance(wanted, str):
+                assert not result["ok"] and wanted in result["error"], (name, index, result)
+                verdicts["refused"] += 1
+                continue
+            assert result["ok"], (name, index, result)
+            duration = result["new_duration"]
+            frames = sorted({0, 1, duration // 3, duration // 2, duration - 2, duration - 1} - {-1, -2})
+            notes = request(index, index, [(f"n{i}", frame, None) for i, frame in enumerate(frames)] +
+                            [(f"r{i}", at, min(duration, at + 7)) for i, at in enumerate(frames[:3])], fps=fps)
+            write(paths[2], notes)
+            report = invoke("plan", paths)
+            verify_report(document, document, notes, report)
+            output = directory / f"sample-{name}-{index}.otio"
+            output.unlink(missing_ok=True)
+            invoke("apply", [*paths, output])
+            if name == "big_int.otio":
+                # Numbers outside the JSON standard, as OpenTimelineIO writes
+                # them: they come back as Inf, -Inf and NaN, and the official
+                # library reads the export.
+                written = output.read_text(encoding="utf-8")
+                for kept in ("Inf", "-Inf", "NaN", "170141183460469231731687303715884105728",
+                             "57896044618658097711785492504343953926634992332820282019728792003956564819968"):
+                    assert re.search(r"(?<![0-9A-Za-z.+-])" + re.escape(kept) + r"(?![0-9A-Za-z.+-])", written), kept
+                assert "-Infinity" not in written and "Viel glück und hab spaß!" in written
+                assert otio.adapters.read_from_file(str(output)).tracks[0].duration().value == 24
+            else:
+                verify_export(document, notes, report, output, library)
+            found = Counter(piece["status"] for note in report["notes"] for piece in note["pieces"])
+            assert (duration, dict(found)) == wanted, (name, index, duration, dict(found))
+            verdicts["read"] += 1
+    return dict(verdicts)
+
+
 def fetch_fixture():
     source = Request(FIXTURE, headers={"User-Agent": "MoonReConform-verification/0.1"})
     for attempt in range(3):
@@ -1443,6 +1580,8 @@ def verify_real(directory, otio):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--live-fixture", action="store_true", help="fetch and verify the pinned ElFuente OTIO")
+    parser.add_argument("--otio-samples", action="store_true",
+                        help="fetch the OpenTimelineIO project's sample files and verify what the tool makes of each")
     parser.add_argument("--official-otio", action="store_true", help="also open exports via Python OpenTimelineIO")
     parser.add_argument("--demo", type=Path, help="write standalone local demo inputs and exit")
     parser.add_argument("--release", action="store_true",
@@ -1492,6 +1631,9 @@ def main():
         if args.live_fixture:
             print("ElFuente 60 fps metadata, 1430 to 1036 frames, "
                   f"3 transfers, 2 held: {dict(verify_real(work, opentimelineio))}")
+        if args.otio_samples:
+            print("The OpenTimelineIO project's 13 sample files, track by track: "
+                  f"{verify_samples(work, opentimelineio)}")
 
 
 if __name__ == "__main__":

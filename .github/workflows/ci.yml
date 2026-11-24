@@ -34,7 +34,7 @@ jobs:
       - run: moon test --target ${{ matrix.target }} --deny-warn
       - name: Independent oracle and CLI checks, limits included
         if: matrix.target == 'js'
-        run: python scripts/verify.py --live-fixture
+        run: python scripts/verify.py --live-fixture --otio-samples
       - name: Fuzz the built command
         if: matrix.target == 'js'
         run: python scripts/fuzz.py --count 600
