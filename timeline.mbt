@@ -4,6 +4,8 @@ priv struct LocatedShot {
   timeline : Span
   media : String?
   source : Span?
+  /// Set when the child holds no footage: why it holds none.
+  why : Unplaceable?
 }
 
 ///|
@@ -22,23 +24,31 @@ pub fn Timeline::from_shots(
   let located = []
   let mut cursor = 0L
   for i, shot in shots {
-    let (media, source, length) = match shot {
+    let (media, source, why, length) = match shot {
       Clip(id, source) => {
         if id.length() == 0 {
           raise Invalid("clip media key is empty")
         }
         source.checked("source span")
-        (Some(id), Some(source), source.length())
+        (Some(id), Some(source), None, source.length())
       }
       Gap(n) => {
         if n <= 0L {
           raise Invalid("gap must have positive duration")
         }
-        (None, None, n)
+        (None, None, None, n)
+      }
+      Unplaceable(reason, n) => {
+        if n <= 0L {
+          raise Invalid(
+            "a clip without footage, a transition or a nested sequence must have positive duration",
+          )
+        }
+        (None, None, Some(reason), n)
       }
     }
     let stop = add_frames(cursor, length)
-    located.push({ clip: i, timeline: { start: cursor, stop, }, media, source, })
+    located.push({ clip: i, timeline: { start: cursor, stop, }, media, source, why, })
     cursor = stop
   }
   { shots: located, length_frames: cursor, }

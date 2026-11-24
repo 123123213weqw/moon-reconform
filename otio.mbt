@@ -124,10 +124,27 @@ fn exact_time(
 ) -> Int64 raise ReconformError {
   let fields = object(value, context)
   expect_schema(fields, "RationalTime.1", context)
-  if exact_integer(required(fields, "rate", context), context + ".rate") !=
-    fps.to_int64() {
+  // A rate that is not a whole number is what 23.976 and 29.97 footage
+  // looks like. That is the commonest reason to be refused, and it
+  // deserves more than being called a bad integer.
+  match required(fields, "rate", context) {
+    Number(n, repr~) if n > 0.0 && n < 1000000.0 && n != n.floor() => raise Invalid(
+        context +
+        ".rate: the frame rate " +
+        repr.unwrap_or(n.to_string()) +
+        " is not a whole number of frames per second. Cuts at rates such as 23.976 and 29.97 are not supported.",
+      )
+    _ => ()
+  }
+  let rate = exact_integer(required(fields, "rate", context), context + ".rate")
+  if rate != fps.to_int64() {
     raise Invalid(
-      context + ": RationalTime rate differs from the requested integer fps",
+      context +
+      ": RationalTime rate " +
+      rate.to_string() +
+      " differs from the request's " +
+      fps.to_string() +
+      " fps. Every time in a cut has to be at one whole-number frame rate. An export that gives a clip's footage at the rate of its own media, as 15 fps footage in a 30 fps sequence, mixes rates and is not supported.",
     )
   }
   exact_integer(required(fields, "value", context), context + ".value")
@@ -233,12 +250,12 @@ fn otio_track(
 }
 
 ///|
-fn media_reference(
+fn media_value(
   clip : Map[String, Json],
   schema : String,
   context : String,
-) -> Map[String, Json] raise ReconformError {
-  let value = if schema == "Clip.1" {
+) -> Json raise ReconformError {
+  if schema == "Clip.1" {
     required(clip, "media_reference", context)
   } else {
     let references = object(
@@ -248,9 +265,6 @@ fn media_reference(
     let key = field_string(clip, "active_media_reference_key", context)
     required(references, key, context + ".media_references")
   }
-  let reference = object(value, context + ".media_reference")
-  expect_schema(reference, "ExternalReference.1", context + ".media_reference")
-  reference
 }
 
 ///|
@@ -284,18 +298,51 @@ pub fn read_otio(
     reject_effects(child, context)
     let shot = match schema {
       "Clip.1" | "Clip.2" => {
-        let reference = media_reference(child, schema, context)
-        let url = field_string(
-          reference,
-          "target_url",
-          context + ".media_reference",
-        )
-        let range = match required(child, "source_range", context) {
-          Null =>
-            required(reference, "available_range", context + ".media_reference")
-          range => range
+        let media = media_value(child, schema, context)
+        let found = match media {
+          // A clip may name no media at all.
+          Null => "none"
+          _ =>
+            field_string(
+              object(media, context + ".media_reference"),
+              "OTIO_SCHEMA",
+              context + ".media_reference",
+            )
         }
-        Clip(url, source_range(range, fps, context + ".source_range"))
+        if found != "ExternalReference.1" {
+          // Media with no location of its own, or none at all: missing,
+          // embedded, or made by the application. The clip takes up time,
+          // and a note on it is held until the media is linked, but there
+          // is no footage to place the note by. The clip alone knows how
+          // long it is.
+          match required(child, "source_range", context) {
+            Null =>
+              raise Invalid(
+                context +
+                ": a clip with no media of its own (" +
+                found +
+                ") has to say how long it is with a source_range",
+              )
+            range =>
+              Unplaceable(
+                Offline,
+                source_range(range, fps, context + ".source_range").length(),
+              )
+          }
+        } else {
+          let reference = object(media, context + ".media_reference")
+          let url = field_string(
+            reference,
+            "target_url",
+            context + ".media_reference",
+          )
+          let range = match required(child, "source_range", context) {
+            Null =>
+              required(reference, "available_range", context + ".media_reference")
+            range => range
+          }
+          Clip(url, source_range(range, fps, context + ".source_range"))
+        }
       }
       "Gap.1" =>
         Gap(
@@ -305,6 +352,38 @@ pub fn read_otio(
             context + ".source_range",
           ).length(),
         )
+      // A transition lies between two clips and lasts its two offsets.
+      "Transition.1" => {
+        let entering = exact_time(
+          required(child, "in_offset", context),
+          fps,
+          context + ".in_offset",
+        )
+        let leaving = exact_time(
+          required(child, "out_offset", context),
+          fps,
+          context + ".out_offset",
+        )
+        let length = add_frames(entering, leaving)
+        if length == 0L {
+          raise Invalid(context + ": a transition has to last at least one frame")
+        }
+        Unplaceable(Transition, length)
+      }
+      // A sequence nested as a clip lasts what its source range says.
+      "Stack.1" =>
+        match required(child, "source_range", context) {
+          Null =>
+            raise Invalid(
+              context +
+              ": a nested sequence has to say how long it is with a source_range",
+            )
+          range =>
+            Unplaceable(
+              Nested,
+              source_range(range, fps, context + ".source_range").length(),
+            )
+        }
       _ => raise Invalid(context + ": unsupported schema " + schema)
     }
     shots.push(shot)

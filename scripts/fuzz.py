@@ -1,17 +1,28 @@
-"""Fuzz the built command with mutated documents and hostile raw input.
+"""Fuzz the built command three ways, each judged by something exact.
 
-A tool that refuses is safe; a tool that answers is only as good as its
-answer. So every mutation of a valid request is held to two standards. The
-command must answer with a status, exit code 0 or 1 and one JSON object,
-never a crash or a stack trace. And whenever the mutation still describes
-a real pair of cuts, the answer has to satisfy the oracle in verify.py,
-exports included, so a mutation that survives is a test of the answer and
-not only of the refusal.
+Mutated documents. A tool that refuses is safe; a tool that answers is only
+as good as its answer. Every mutation of a valid request is held to two
+standards. The command must answer with a status, exit code 0 or 1 and one
+JSON object, never a crash or a stack trace. And whenever the mutation still
+describes a real pair of cuts, the answer has to satisfy the oracle in
+verify.py, exports included.
 
-    python scripts/fuzz.py --count 600 --seed 1
+Frame-count tokens. A number in an OTIO document may be written many ways,
+and the reader has to accept exactly those that denote a whole number of
+frames a double holds exactly. Random tokens are judged against Python's
+exact decimals.
 
-A failing trial writes its documents under _build/fuzz and the script exits
-with 1. The count and the seed fix the trials, so a failure replays.
+Aligned pairs. Random cuts almost never put two boundaries on the same
+frame, which is where an interval tool is easiest to get wrong. These cuts
+draw footage starts and lengths from one small grid, so clip edges,
+annotation edges and repeated footage meet constantly. Every ambiguous piece
+is then resolved by a random valid choice, and the markers are read back
+against a third cut.
+
+    python scripts/fuzz.py --count 600 --tokens 400 --pairs 300 --seed 1
+
+A failing trial keeps its documents under _build/fuzz and the script exits
+with 1. Counts and the seed fix the trials, so a failure replays.
 """
 
 import argparse
@@ -24,6 +35,7 @@ import subprocess
 import sys
 import time
 from collections import Counter
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import verify as v
@@ -318,6 +330,207 @@ def trial(seed):
         return seed, "FAILED", f"{type(error).__name__}: {error}"[:600]
 
 
+TOP = 2 ** 53 - 1
+
+
+def token(rng):
+    """A JSON number as some exporter or other might write it: so many
+    digits, perhaps a fraction padded with zeroes, perhaps an exponent."""
+    text = ("-" if rng.random() < 0.08 else "") + (
+        "".join(rng.choice("0123456789") for _ in range(rng.choice([1, 1, 2, 3, 5, 9, 15, 16, 17, 20]))
+         ).lstrip("0") or "0")
+    if rng.random() < 0.6:
+        fraction = "".join(rng.choice("0123456789")
+                           for _ in range(rng.choice([1, 1, 2, 3, 10, 17, 20])))
+        if rng.random() < 0.3:
+            fraction = fraction.rstrip("0123456789") + "0" * rng.randrange(0, 18)
+        text += "." + (fraction or "0")
+    if rng.random() < 0.5:
+        exponent = rng.choice([0, 1, 2, 3, 5, 10, 15, 17, 20, -1, -2, -3, -5, -10, -17, -20,
+                               308, 309, 400, -308, -400, 999999999, -999999999])
+        text += rng.choice("eE") + ("+" if rng.random() < 0.5 else "") * (exponent >= 0) + (
+            "-" if exponent < 0 else "") + str(abs(exponent))
+    return text
+
+
+def expected(text):
+    """What the reader must do with a frame-count token, by exact decimals:
+    accept it only if its exact value is a whole number of frames that a
+    double holds exactly, and then report exactly that number."""
+    try:
+        value = Decimal(text)
+        exact = Decimal(float(value)) == value
+    except (InvalidOperation, OverflowError, ValueError):
+        return None
+    if value != value.to_integral_value() or not 0 <= value <= TOP or not exact:
+        return None
+    return int(value) if value < TOP else "edge"
+
+
+def token_trial(index):
+    """Put one token where a clip's footage begins and read the number back."""
+    try:
+        text = token(random.Random(index))
+        cut = json.dumps(v.timeline([v.clip("file:///shoot/A.mov", 777, 1, 24)])).replace(
+            '"value": 777', f'"value": {text}', 1)
+        paths = [FLOOR / f"token-{os.getpid()}-{index}-{i}" for i in range(3)]
+        paths[0].write_text(cut)
+        paths[1].write_text(cut)
+        paths[2].write_text(json.dumps(v.request(0, 0, [("n", 0, None)])))
+        answer = status(v.launch("plan", *paths))
+        for path in paths:
+            path.unlink(missing_ok=True)
+        want = expected(text)
+        if want == "edge":  # the last frame a token can name cannot start a clip
+            problem = None if answer["ok"] is False and "exact frame range" in answer["error"] else str(answer)[:200]
+            return index, text, "refused", problem
+        if want is None:
+            return index, text, "refused", None if answer["ok"] is False else "accepted: " + str(answer)[:200]
+        if answer["ok"] is False:
+            return index, text, "accepted", answer["error"]
+        got = answer["notes"][0]["pieces"][0]["source"]["start"]
+        return index, text, "accepted", None if got == want else f"read back {got}, expected {want}"
+    except Exception as error:
+        return index, "?", "FAILED", f"{type(error).__name__}: {error}"[:400]
+
+
+MEDIA = [f"file:///shoot/{name}.mov" for name in "ABCD"]
+STARTS = [0, 2, 4, 6, 8, 10]
+LENGTHS = [1, 2, 3, 4, 5, 6, 8, 10]
+
+
+NO_MEDIA = ["MissingReference.1", "GeneratorReference.1", "ImageSequenceReference.1"]
+
+
+def aligned_cut(rng):
+    """A cut whose boundaries are made to coincide: footage starts and
+    lengths come from one small grid. Among the clips sit the children an
+    export really has, a clip whose media has no location of its own, a
+    transition and a sequence nested as a clip, all on the same grid."""
+    children = []
+    for _ in range(rng.randrange(0, 7)):
+        start, length = rng.choice(STARTS), rng.choice(LENGTHS)
+        roll = rng.random()
+        if roll < 0.15:
+            children.append(v.gap(rng.choice([1, 2, 4]), 24))
+        elif roll < 0.23:
+            media = (None if rng.random() < 0.2 else
+                     v.obj(rng.choice(NO_MEDIA), name="", metadata={}))
+            children.append(dict(v.clip(MEDIA[0], start, length, 24, legacy=True),
+                                 media_reference=media))
+        elif roll < 0.31:
+            entering = rng.choice([0, 1, 2])
+            leaving = rng.choice([1, 2]) if entering == 0 else rng.choice([0, 1, 2])
+            children.append(v.obj("Transition.1", name="dissolve", metadata={},
+                                  transition_type="SMPTE_Dissolve", parameters={},
+                                  in_offset=v.rt(entering, 24), out_offset=v.rt(leaving, 24)))
+        elif roll < 0.38:
+            children.append(v.obj("Stack.1", name="sub", metadata={},
+                                  source_range=v.time_range(0, length, 24),
+                                  children=[], markers=[], effects=[], enabled=True))
+        else:
+            children.append(v.clip(rng.choice(MEDIA), start, length, 24, legacy=rng.random() < 0.3))
+    return children
+
+
+def choose(rng, notes, summaries):
+    """A random valid choice for every ambiguous piece."""
+    return [dict(note_id=note["id"], piece=piece,
+                 clip=rng.choice(summary["pieces"][piece]["candidates"])["clip"])
+            for note, summary in zip(notes, summaries)
+            for piece in range(len(summary["pieces"]))
+            if len(summary["pieces"][piece]["candidates"]) > 1]
+
+
+def plan_and_check(rng, tag, before, after, notes, imported=()):
+    """Plan, resolve every ambiguity at random, and check both answers."""
+    paths = [FLOOR / f"{tag}-{i}" for i in range(3)]
+    for path, document in zip(paths, (before, after, notes)):
+        v.write(path, document)
+    first = v.invoke("plan", paths)
+    v.verify_report(before, after, notes, first, imported)
+    choices = choose(rng, [*notes["notes"], *imported], first["notes"])
+    if not choices:
+        return first, notes, paths
+    decided = dict(notes, selections=choices)
+    v.write(paths[2], decided)
+    report = v.invoke("plan", paths)
+    v.verify_report(before, after, decided, report, imported)
+    return report, decided, paths
+
+
+def pair_attempt(seed):
+    rng = random.Random(seed)
+    kind = rng.choice(["Video", "Audio"])
+    old_side, new_side, last_side = aligned_cut(rng), aligned_cut(rng), aligned_cut(rng)
+    before, after, third = (v.timeline(side, kind=kind) for side in (old_side, new_side, last_side))
+    if rng.random() < 0.4:  # a sequence: a second track of the other kind
+        other = "Audio" if kind == "Video" else "Video"
+        for cut in (before, after, third):
+            cut["tracks"]["children"].append(v.make_track(aligned_cut(rng), kind=other))
+    old_track, new_track, last_track = (rng.randrange(len(cut["tracks"]["children"]))
+                                        for cut in (before, after, third))
+    total = sum(end - at for _, at, end, _, _ in v.spans(before, old_track))
+    # Annotation edges are drawn to the cut's own edges: on them, one short
+    # of them and one past them. Some are anchored to footage instead.
+    edges = {0, total}
+    for _, at, end, _, _ in v.spans(before, old_track):
+        edges |= {at - 1, at, at + 1, end - 1, end, end + 1}
+    rows = []
+    for i in range(rng.randrange(0, 9)):
+        if total and rng.random() < 0.7:
+            start = (rng.choice(sorted(e for e in edges if 0 <= e < total))
+                     if rng.random() < 0.85 else rng.randrange(total))
+            stop = min(total, start + rng.choice([1, 1, 2, 3, rng.randrange(1, 12)]))
+            rows.append((f"n{i}", start, None if stop == start + 1 and rng.random() < 0.3 else stop))
+        else:
+            start = rng.randrange(0, 11)
+            rows.append(dict(id=f"s{i}", text=f"源素材 {i}", media=rng.choice(MEDIA + ["zz"]),
+                             source=dict(start=start, stop=rng.randrange(start + 1, 14))))
+    report, notes, paths = plan_and_check(rng, f"pair-{os.getpid()}-{seed}",
+                                          before, after, v.request(old_track, new_track, rows))
+    tally = Counter(pairs=1, notes=len(notes["notes"]), transfers=len(report["transfers"]),
+                    held=len(report["held"]), chosen=len(notes["selections"]))
+    written = after
+    if report["transfers"]:
+        written_json = FLOOR / f"pair-{os.getpid()}-{seed}.otio"
+        assert v.invoke("apply", [*paths, written_json]) == report
+        v.verify_export(after, notes, report, written_json, None)
+        written = json.loads(written_json.read_text(encoding="utf-8"))
+        tally["exported"] += 1
+    if v.track(written, new_track)["markers"]:
+        # Round two: a third cut carrying the markers wherever the editor's
+        # application put them, read back by the footage they record.
+        carried = v.track(written, new_track)["markers"]
+        v.track(third, last_track)["markers"] = carried + (
+            [v.marker("editor", rng.randrange(0, 6), 1, 24)] if rng.random() < 0.5 else [])
+        imported = v.imported_notes(written, new_track)
+        again = v.request(new_track, last_track, report["carry"], from_markers=True)
+        second, decided, more = plan_and_check(rng, f"again-{os.getpid()}-{seed}",
+                                               written, third, again, imported)
+        tally["second rounds"] += 1
+        tally["transfers"] += len(second["transfers"])
+        if second["transfers"]:
+            final = FLOOR / f"again-{os.getpid()}-{seed}.otio"
+            v.invoke("apply", [*more, final])
+            v.verify_export(third, decided, second, final, None, imported)
+            final.unlink(missing_ok=True)
+            tally["exported"] += 1
+        for path in more:
+            path.unlink(missing_ok=True)
+    for path in paths:
+        path.unlink(missing_ok=True)
+    (FLOOR / f"pair-{os.getpid()}-{seed}.otio").unlink(missing_ok=True)
+    return tally
+
+
+def pair_trial(seed):
+    try:
+        return seed, "ok", pair_attempt(seed)
+    except Exception as error:
+        return seed, "FAILED", f"{type(error).__name__}: {error}"[:500]
+
+
 def raw_documents():
     """Documents that are not documents: the contract and nothing more."""
     old, new, request = (json.dumps(document, ensure_ascii=False).encode() for document in DOCS)
@@ -341,6 +554,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--count", type=int, default=600, help="mutations to try")
+    parser.add_argument("--tokens", type=int, default=400, help="frame-count tokens to judge by exact decimals")
+    parser.add_argument("--pairs", type=int, default=300, help="pairs of cuts with coinciding boundaries to plan")
     parser.add_argument("--seed", type=int, default=1, help="first seed; trials are seeds seed..seed+count-1")
     parser.add_argument("--workers", type=int, default=min(8, os.cpu_count() or 1))
     parser.add_argument("--release", action="store_true", help="fuzz the release build of the command")
@@ -374,6 +589,34 @@ def main():
         print(f"  {count:5d} refused: {reason}")
     for seed, _ in failures:
         print(f"  documents of seed {seed} are under {FLOOR / f'failed-{seed}-*.json'}")
+
+    if args.tokens:
+        tally, bad = Counter(), 0
+        with multiprocessing.Pool(args.workers) as pool:
+            for index, text, verdict, problem in pool.imap_unordered(
+                    token_trial, range(args.seed, args.seed + args.tokens), chunksize=16):
+                tally[verdict] += 1
+                if problem:
+                    bad += 1
+                    print(f"!! token {text} (seed {index}): {verdict}: {problem}",
+                          file=sys.stderr, flush=True)
+        print(f"{args.tokens} frame-count tokens from seed {args.seed} against exact decimals: "
+              f"{dict(tally)}; {bad} wrong")
+        failures += [("token", None)] * bad
+
+    if args.pairs:
+        tally, bad = Counter(), 0
+        with multiprocessing.Pool(args.workers) as pool:
+            for seed, verdict, detail in pool.imap_unordered(
+                    pair_trial, range(args.seed, args.seed + args.pairs), chunksize=8):
+                if verdict == "FAILED":
+                    bad += 1
+                    print(f"!! pair seed {seed}: {detail}", file=sys.stderr, flush=True)
+                else:
+                    tally.update(detail)
+        print(f"{args.pairs} pairs of cuts with coinciding boundaries from seed {args.seed}: "
+              f"{dict(tally)}; {bad} failed")
+        failures += [("pair", None)] * bad
     return 1 if failures else 0
 
 

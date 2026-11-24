@@ -102,3 +102,93 @@ test "an Audio track is a line of cuts like a Video track; other kinds are not" 
   }
   assert_true(exported is Err(Invalid("selected track marker 1: expected an object")))
 }
+
+///|
+fn j_note(id : String, text : String, start : Int64, stop : Int64) -> Note {
+  { id, text, range: { start, stop, }, media: None, origin: None }
+}
+
+///|
+fn j_media(url : String, first : Int64, length : Int64) -> Json {
+  j_obj({
+    "OTIO_SCHEMA": Json("ExternalReference.1"),
+    "name": Json(""),
+    "metadata": j_empty(),
+    "target_url": Json(url),
+    "available_range": j_range(first, length, 24),
+  })
+}
+
+///|
+/// One clip of `reference`. Without a source range it uses as much of its
+/// media as there is.
+fn j_take(reference : Json, source : Json?) -> Json {
+  j_obj({
+    "OTIO_SCHEMA": Json("Clip.1"),
+    "name": Json("take"),
+    "media_reference": reference,
+    "metadata": j_empty(),
+    "source_range": match source {
+      Some(range) => range
+      None => Json::null()
+    },
+    "markers": Json::array([]),
+    "effects": Json::array([]),
+    "enabled": Json::boolean(true),
+  })
+}
+
+///|
+fn j_message(document : Json) -> String {
+  let outcome = Ok(read_otio(document, track_index=0, fps=24)) catch {
+    error => Err(error)
+  }
+  match outcome {
+    Err(Invalid(message)) => message
+    Err(Limit(message)) => "limit: " + message
+    _ => "no error raised"
+  }
+}
+
+///|
+test "a clip may use its media's range, and a name is matched byte for byte" {
+  let rate = 24
+  let url = "file:///shoot/A.mov"
+
+  // A clip without a source range uses as much of its media as there is:
+  // here A[30,34), of which the new cut keeps the first two frames.
+  let whole = j_timeline(j_track([j_take(j_media(url, 30L, 4L), None)], []))
+  let part = j_timeline(j_track([j_clip(url, 30L, 2L, rate)], []))
+  let reports = plan(
+    read_otio(whole, track_index=0, fps=rate),
+    read_otio(part, track_index=0, fps=rate),
+    [j_note("n", "whole take", 0L, 4L)],
+  )
+  assert_eq(reports[0].pieces.length(), 2)
+  assert_eq(
+    reports[0].pieces[0].candidates.map(p => (p.clip, p.range.start, p.range.stop)),
+    [(0, 0L, 2L)],
+  )
+  assert_true(reports[0].pieces[0].source is Some({ start: 30L, stop: 32L, }))
+  assert_true(reports[0].pieces[1].kind is Deleted)
+
+  // A media key is matched byte for byte. The composed and the decomposed
+  // spelling of one name are two media as far as this tool can tell.
+  let composed = "file:///shoot/\u{e9}.mov"
+  let decomposed = "file:///shoot/e\u{301}.mov"
+  assert_eq(composed.length() == decomposed.length(), false)
+  let here = j_timeline(j_track([j_clip(composed, 0L, 4L, rate)], []))
+  let there = j_timeline(j_track([j_clip(decomposed, 0L, 4L, rate)], []))
+  let split = plan(
+    read_otio(here, track_index=0, fps=rate),
+    read_otio(there, track_index=0, fps=rate),
+    [j_note("n", "same file, two spellings", 0L, 4L)],
+  )
+  assert_true(split[0].pieces[0].kind is Deleted)
+  let same = plan(
+    read_otio(here, track_index=0, fps=rate),
+    read_otio(here, track_index=0, fps=rate),
+    [j_note("n", "one spelling", 0L, 4L)],
+  )
+  assert_true(same[0].pieces[0].kind is Unique)
+}

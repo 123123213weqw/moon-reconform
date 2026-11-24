@@ -42,7 +42,7 @@ class Fault(namedtuple("Fault", "name edits")):
 
 PLAN, INDEX, TIMELINE = "plan.mbt", "index.mbt", "timeline.mbt"
 RESOLVE, REQUEST, EXPORT, MARKERS = "resolve.mbt", "request.mbt", "export.mbt", "markers.mbt"
-OTIO, MAIN = "otio.mbt", "cmd/main/main.mbt"
+OTIO, MAIN, MODEL = "otio.mbt", "cmd/main/main.mbt", "model.mbt"
 
 FAULTS = [
     # The plan: pieces, candidates, budgets.
@@ -71,6 +71,25 @@ FAULTS = [
     Fault("anything is kept where a marker should be",
           Edit(OTIO, "        guard marker is Object(_) else {",
                "        guard marker is Object(_) || marker is Number(_) else {")),
+    Fault("a frame rate that is not a whole number is called a bad integer",
+          Edit(OTIO, "if n > 0.0 && n < 1000000.0 && n != n.floor() =>", "if n < 0.0 =>")),
+    Fault("a transition is taken to last its entering offset only",
+          Edit(OTIO, "let length = add_frames(entering, leaving)", "let length = entering")),
+    Fault("a transition of no length is read",
+          Edit(OTIO, "if length == 0L {", "if length < 0L {")),
+    Fault("a clip without a source range is refused",
+          Edit(OTIO, '            Null =>\n              required(reference, "available_range", context + ".media_reference")\n            range => range\n',
+               '            Null => Json::null()\n            range => range\n')),
+    Fault("an exact token is called fractional",
+          Edit(OTIO, "  shift + trailing_zeroes >= fractional\n", "  shift + trailing_zeroes > fractional\n")),
+    Fault("an inexact token is called exact",
+          Edit(OTIO, "  shift + trailing_zeroes >= fractional\n", "  shift + trailing_zeroes >= 0\n")),
+    Fault("a clip without footage is reported as black",
+          Edit(MODEL, "Some(Offline) => OfflinePiece", "Some(Offline) => GapPiece")),
+    Fault("a transition is reported as black",
+          Edit(MODEL, "Some(Transition) => TransitionPiece", "Some(Transition) => GapPiece")),
+    Fault("a nested sequence is reported as black",
+          Edit(MODEL, "Some(Nested) => NestedPiece", "Some(Nested) => GapPiece")),
     # The index and the timeline.
     Fault("a shot with one frame inside is not a candidate",
           Edit(INDEX, "    if span.stop > target.start {", "    if span.stop - 1 > target.start {")),
@@ -105,6 +124,8 @@ FAULTS = [
           Edit(EXPORT, "let offset = placement.range.start - shot.timeline.start", "let offset = 0L")),
     Fault("an exported marker already on the track is not refused",
           Edit(EXPORT, "    if seen.contains(key) {", "    if seen.contains(key) && false {")),
+    Fault("a number too large for a double is written back as Inf",
+          Edit(EXPORT, "Some(token) if n.is_inf() =>", "Some(token) if n.is_nan() =>")),
     Fault("the export edits its input",
           Edit(EXPORT, "let track = otio_track(root, track_index).copy()",
                "let track = otio_track(root, track_index)")),

@@ -160,6 +160,9 @@ fn piece_json(piece : Piece) -> Json {
     Ambiguous => "ambiguous"
     Deleted => "deleted"
     GapPiece => "gap"
+    OfflinePiece => "offline"
+    TransitionPiece => "transition"
+    NestedPiece => "nested"
   }
   Json::object({
     "old": match piece.old {

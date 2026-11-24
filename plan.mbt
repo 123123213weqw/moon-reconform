@@ -143,7 +143,7 @@ pub fn plan(
                 media: None,
                 source: None,
                 candidates: [],
-                kind: GapPiece,
+                kind: piece_kind(shot.why),
               })
             }
             Some(key) => {

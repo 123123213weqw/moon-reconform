@@ -5,7 +5,9 @@ import bisect
 import copy
 import hashlib
 import json
+import os
 import random
+import re
 import subprocess
 import tempfile
 import time
@@ -116,27 +118,62 @@ def invoke(mode, paths, error=None, timeout=20):
     return result
 
 
+def reference_of(item):
+    """The media reference a clip uses, or None when it names no media."""
+    if item["OTIO_SCHEMA"] == "Clip.1":
+        return item["media_reference"]
+    return item["media_references"][item["active_media_reference_key"]]
+
+
+def has_footage(item):
+    """Whether a clip names media with a location of its own."""
+    reference = reference_of(item)
+    return reference is not None and reference["OTIO_SCHEMA"] == "ExternalReference.1"
+
+
 def spans(document, index):
     """The selected track as intervals, read from the document alone:
     (child, track start, track stop, media, first source frame). No frame
-    is enumerated, so a cut 2^51 frames long costs the same as one of 20."""
+    is enumerated, so a cut 2^51 frames long costs the same as one of 20.
+    A child that holds no footage has none, like a gap; `unplaceable` says
+    why."""
     result, at = [], 0
     for child, item in enumerate(track(document, index)["children"]):
-        outer = item["source_range"]
-        if item["OTIO_SCHEMA"] == "Gap.1":
+        outer = item.get("source_range")  # a transition has none
+        kind = item["OTIO_SCHEMA"]
+        if kind == "Transition.1":  # lies between two clips, as long as its two offsets
+            length = int(item["in_offset"]["value"]) + int(item["out_offset"]["value"])
+            result.append((child, at, at + length, None, None))
+        elif kind in ("Gap.1", "Stack.1"):  # black, or a sequence nested as a clip
             length = int(outer["duration"]["value"])
             result.append((child, at, at + length, None, None))
         else:
-            reference = (
-                item["media_reference"] if item["OTIO_SCHEMA"] == "Clip.1"
-                else item["media_references"][item["active_media_reference_key"]]
-            )
-            inner = outer or reference["available_range"]
-            first = int(inner["start_time"]["value"])
-            length = int(inner["duration"]["value"])
-            result.append((child, at, at + length, reference["target_url"], first))
+            if has_footage(item):
+                reference = reference_of(item)
+                inner = outer or reference["available_range"]
+                first = int(inner["start_time"]["value"])
+                length = int(inner["duration"]["value"])
+                result.append((child, at, at + length, reference["target_url"], first))
+            else:  # media with no location of its own: missing, embedded or made
+                length = int(outer["duration"]["value"])
+                result.append((child, at, at + length, None, None))
         at += length
     return result
+
+
+def unplaceable(document, index):
+    """The children of a track that take up time but hold no footage a note
+    could be placed on, each with the reason."""
+    found = {}
+    for child, item in enumerate(track(document, index)["children"]):
+        kind = item["OTIO_SCHEMA"]
+        if kind == "Transition.1":
+            found[child] = "transition"
+        elif kind == "Stack.1":
+            found[child] = "nested"
+        elif kind != "Gap.1" and not has_footage(item):
+            found[child] = "offline"
+    return found
 
 
 def frames(document, index):
@@ -183,7 +220,7 @@ def covering(index, media, source):
     return list(dict.fromkeys(found))
 
 
-def planned(old, index, note):
+def planned(old, index, note, without=None):
     """The pieces an annotation must produce, by plain interval arithmetic:
     cut each run of footage wherever the set of new placements covering it
     changes. Nothing here sweeps endpoints or keeps a budget, and every
@@ -193,20 +230,21 @@ def planned(old, index, note):
     if media is None:
         start = note["start"]
         stop = note.get("stop", start + 1)
-        for _, at, end, key, first in old:
+        for child, at, end, key, first in old:
             lo, hi = max(start, at), min(stop, end)
             if lo < hi:
                 runs.append((dict(start=lo, stop=hi), key,
                              None if first is None else
-                             dict(start=first + lo - at, stop=first + hi - at)))
+                             dict(start=first + lo - at, stop=first + hi - at),
+                             (without or {}).get(child, "gap")))
     else:
         start, stop = note["source"]["start"], note["source"]["stop"]
-        runs.append((None, media, dict(start=start, stop=stop)))
+        runs.append((None, media, dict(start=start, stop=stop), "gap"))
     pieces = []
-    for old_range, key, source in runs:
+    for old_range, key, source, why in runs:
         if source is None:
             pieces.append(dict(old=old_range, media=None, source=None,
-                               status="gap", candidates=[]))
+                               status=why, candidates=[]))
             continue
         hits = []
         for child, at, end, _, first in covering(index, key, source):
@@ -259,7 +297,7 @@ def imported_notes(document, index):
     return notes
 
 
-def walk_frames(old, destinations, note, summary, statuses):
+def walk_frames(old, destinations, note, summary, statuses, without=None):
     """Ground truth by enumeration: every frame of every piece is looked up
     where it is, and the piece must say exactly what was found there."""
     anchored = note.get("media")
@@ -276,7 +314,8 @@ def walk_frames(old, destinations, note, summary, statuses):
             targets = destinations[media, source]
             statuses[piece["status"]] += 1
             if media is None:
-                assert piece["status"] == "gap" and piece["source"] is None
+                assert piece["status"] == (without or {}).get(child, "gap"), piece
+                assert piece["source"] is None
             else:
                 assert piece["source"]["start"] + frame - at == source
                 assert piece["source"]["stop"] - piece["source"]["start"] == end - at
@@ -300,6 +339,7 @@ def verify_report(before, after, notes, report, imported=(), walk=True):
     old = spans(before, notes["old_track"])
     new = spans(after, notes["new_track"])
     index = index_spans(new)
+    without = unplaceable(before, notes["old_track"])
 
     def length(shots):
         return sum(end - at for _, at, end, _, _ in shots)
@@ -330,7 +370,7 @@ def verify_report(before, after, notes, report, imported=(), walk=True):
         assert summary["media"] == anchored
         assert summary["range"] == dict(start=start, stop=stop)
         assert summary["origin"] == note.get("origin")
-        assert summary["pieces"] == planned(old, index, note), note["id"]
+        assert summary["pieces"] == planned(old, index, note, without), note["id"]
         cursor, proposed = start, []
         for piece_index, piece in enumerate(summary["pieces"]):
             if not walk:
@@ -357,7 +397,7 @@ def verify_report(before, after, notes, report, imported=(), walk=True):
                         id=f'{note["id"]}#{piece_index}', text=note["text"],
                         media=piece["media"], source=piece["source"]))
         if walk:
-            walk_frames(walked, destinations, note, summary, statuses)
+            walk_frames(walked, destinations, note, summary, statuses, without)
     assert report["held"] == expected_held and report["transfers"] == expected_transfers
     assert report["carry"] == expected_carry
     return statuses
@@ -865,8 +905,9 @@ def verify_command(directory):
     refused(["plan", *paths], unreadable + str(paths[0]))
     checked += ["byte-order mark", "size limit"]
 
-    # Outputs: a directory that does not exist, a directory that does, and
-    # an input offered as its own result. The last never loses the input.
+    # Outputs: a directory that does not exist, a directory that does, one
+    # that will not take a file, a parent that is a file, and an input
+    # offered as its own result. The last never loses the input.
     paths[0].write_bytes(good)
     report = invoke("plan", paths)
     nowhere = directory / "no-such-dir" / "out.otio"
@@ -878,6 +919,20 @@ def verify_command(directory):
             f"cannot create OTIO output (EEXIST): {paths[1]}")
     assert paths[1].read_bytes() == json.dumps(after, ensure_ascii=False).encode()
     assert not nowhere.exists() and list(folder.iterdir()) == []
+    if hasattr(os, "geteuid") and os.geteuid() != 0:  # root writes where it likes
+        locked = directory / "locked"
+        locked.mkdir()
+        locked.chmod(0o500)
+        try:
+            refused(["apply", *paths, locked / "out.otio"],
+                    f"cannot create OTIO output (EACCES): {locked / 'out.otio'}")
+            assert list(locked.iterdir()) == []
+        finally:
+            locked.chmod(0o700)
+    plain = directory / "not-a-folder"
+    plain.write_text("a file", encoding="utf-8")
+    refused(["apply", *paths, plain / "out.otio"],
+            f"cannot create OTIO output (ENOTDIR): {plain / 'out.otio'}")
     output = directory / "command.otio"
     assert invoke("apply", [*paths, output]) == report
     checked.append("outputs")
@@ -949,7 +1004,7 @@ def verify_budgets(directory):
         report = invoke("plan", files(directory, cut, cut, request(0, 0, [("n", 0, None)], fps=fps)))
         assert report["transfers"][0]["placement"] == dict(clip=0, range=dict(start=0, stop=1))
     invoke("plan", files(directory, one, one, request(0, 0, [("n", 0, None)], fps=25)),
-           "RationalTime rate differs from the requested integer fps")
+           "RationalTime rate 24 differs from the request's 25 fps")
 
     # A track index is an Int32 that has to exist.
     far = request(2 ** 31, 0, [("n", 0, None)])
@@ -1093,6 +1148,253 @@ def verify_audio(directory, otio):
     return status
 
 
+def verify_corners(directory, otio):
+    """Corners the other passes walk past: cuts with nothing in them, notes
+    that say nothing or far too much, a reader that stops listening, the
+    commonest refusal, and what becomes of a document the tool does not
+    read and of one number it cannot keep."""
+    a = "file:///shoot/A.mov"
+    empty, one = timeline([]), timeline([clip(a, 0, 4, 24)])
+    single = request(0, 0, [("n", 0, None)])
+    checked = []
+
+    # Nothing on either side is still a request. Footage needs no old cut,
+    # and with no new cut a note has nowhere to go.
+    bare = invoke("plan", files(directory, empty, empty, request(0, 0, [])))
+    assert (bare["old_duration"], bare["new_duration"], bare["notes"]) == (0, 0, [])
+    far = request(0, 0, [dict(id="s", text="源素材", media=a, source=dict(start=0, stop=1))])
+    landed = invoke("plan", files(directory, empty, one, far))
+    verify_report(empty, one, far, landed)
+    assert [t["placement"] for t in landed["transfers"]] == [dict(clip=0, range=dict(start=0, stop=1))]
+    gone = invoke("plan", files(directory, one, empty, single))
+    verify_report(one, empty, single, gone)
+    assert gone["held"] == ["n"] and [note["id"] for note in gone["carry"]] == ["n#0"]
+    checked.append("empty cuts")
+
+    # A note may say nothing, or five thousand characters. Both come back
+    # as the marker's name, and so does an id that is only blanks.
+    long = "字" * 5000
+    talky = request(0, 0, [("blank", 0, None), (" ", 1, None), (long, 2, None)])
+    paths = files(directory, one, one, talky)
+    report = invoke("plan", paths)
+    verify_report(one, one, talky, report)
+    output = directory / "corner.otio"
+    assert invoke("apply", [*paths, output]) == report
+    verify_export(one, talky, report, output, otio)
+    assert [m["name"] for m in track(json.loads(output.read_text(encoding="utf-8")))["markers"]] == [
+        note["text"] for note in talky["notes"]]
+    checked.append("notes that say nothing or too much")
+
+    # With nothing to write the new cut still comes back, and as it went in.
+    black = timeline([gap(4, 24)])
+    paths = files(directory, one, black, request(0, 0, [("gone", 0, 2)]))
+    silent = directory / "silent.otio"
+    assert invoke("apply", [*paths, silent])["held"] == ["gone"]
+    assert json.loads(silent.read_text(encoding="utf-8")) == black
+    checked.append("nothing to write")
+
+    # A reader that stops listening is not an error for the writer: the
+    # report is three megabytes and the pipe is closed after ten bytes.
+    many = request(0, 0, [(f"n{i}", i % 4, None) for i in range(9000)])
+    paths = files(directory, one, one, many)
+    script = f"node {CLI} plan {' '.join(map(str, paths))} | head -c 10; exit ${{PIPESTATUS[0]}}"
+    proc = subprocess.run(["bash", "-c", script], capture_output=True, encoding="utf-8", cwd=ROOT)
+    assert proc.returncode == 0 and not proc.stderr and proc.stdout.startswith('{"ok":true'), (
+        proc.returncode, proc.stderr[:300], proc.stdout[:40])
+    checked.append("a closed pipe")
+
+    # Footage at 29.97 is the commonest reason to be refused. It is told
+    # apart from a number that is simply malformed.
+    cut_text = json.dumps(one)
+    for rate in ("29.97002997002997", "23.976", "59.94", "0.5"):
+        paths = files(directory, one, one, single)
+        paths[1].write_text(cut_text.replace('"rate": 24', f'"rate": {rate}'))
+        error = invoke("plan", paths, f"the frame rate {rate} is not a whole number of frames per second")
+        assert "23.976 and 29.97 are not supported" in error["error"], error
+    paths = files(directory, one, one, single)
+    paths[1].write_text(cut_text.replace('"rate": 24', '"rate": -24'))
+    invoke("plan", paths, "expected a nonnegative exact integer")
+    checked.append("frame rates that are not whole numbers")
+
+    # What the tool does not read it hands back unchanged, number for
+    # number and in the notation it was written in.
+    tokens = ["-0", "1e0", "1E+2", "1.5e300", "1e308", "1.7976931348623157e308", "-1e-309",
+              "4.9e-324", "1e-400", "123456789012345678901234567890", "0.1", "0.10", "1.000",
+              "10.0e-1", "1e-100000000", "9007199254740993", "9007199254740992",
+              "18446744073709551616", "0.30000000000000004", "1e7", "0e0", "0.0",
+              "100.0000000000000000000000", "4503599627370497", "0.000000000000000000000001e24"]
+    fat = copy.deepcopy(one)
+    fat["metadata"] = {"keep": "@tokens@"}
+    text = json.dumps(fat, ensure_ascii=False).replace('"@tokens@"', "[" + ",".join(tokens) + "]", 1)
+    paths = files(directory, one, fat, single)
+    paths[1].write_text(text)
+    report = invoke("plan", paths)
+    output = directory / "tokens.otio"
+    assert invoke("apply", [*paths, output]) == report
+    written_text = output.read_text(encoding="utf-8")
+    for token in tokens:
+        assert re.search(r"(?<![0-9eE.+-])" + re.escape(token) + r"(?![0-9eE.+-])", written_text), token
+    expected = json.loads(text)
+    track(expected)["markers"] = track(json.loads(written_text))["markers"]
+    assert json.loads(written_text) == expected
+    checked.append("numbers kept as written")
+
+    # Structure for structure too, even where it is odd: a number where a
+    # clip's marker should be, and the same on a track nobody selected.
+    odd = timeline([clip(a, 0, 4, 24)])
+    odd["tracks"]["children"].append(make_track([], kind="Audio"))
+    odd["tracks"]["children"][0]["children"][0]["markers"] = [5]
+    odd["tracks"]["children"][1]["markers"] = [5, {"OTIO_SCHEMA": "Marker.2"}]
+    odd["extra"] = {"a": [1, {"b": None}, "x" * 100000]}
+    paths = files(directory, one, odd, single)
+    report = invoke("plan", paths)
+    verify_report(one, odd, single, report)
+    output = directory / "odd.otio"
+    assert invoke("apply", [*paths, output]) == report
+    verify_export(odd, single, report, output, None)
+    checked.append("structure kept as found")
+
+    # A clip whose media is missing, embedded or generated, a transition and
+    # a nested sequence all take up time and hold no footage a note can be
+    # placed on. They are reported where they are, on either side, and what
+    # cannot be laid out at all is refused by name.
+    def offline(length, schema="MissingReference.1"):
+        return dict(clip(a, 0, length, 24, legacy=True),
+                    media_reference=obj(schema, name="", metadata={}))
+
+    def dissolve(entering, leaving):
+        return obj("Transition.1", name="dissolve", metadata={}, transition_type="SMPTE_Dissolve",
+                   parameters={}, in_offset=rt(entering, 24), out_offset=rt(leaving, 24))
+
+    def nested(length):
+        return obj("Stack.1", name="sub", metadata={}, source_range=time_range(0, length, 24),
+                   children=[], markers=[], effects=[], enabled=True)
+
+    # 3 frames offline | A[0,4) | 3 of transition | 2 nested | A[4,6)
+    mixed = timeline([offline(3), clip(a, 0, 4, 24), dissolve(1, 2), nested(2), clip(a, 4, 2, 24)])
+    over = request(0, 0, [("off", 0, 2), ("a", 3, 7), ("dissolve", 7, 10), ("sub", 10, 12),
+                          ("cross", 5, 13), ("tail", 12, 14)])
+    report = invoke("plan", files(directory, mixed, one, over))
+    verify_report(mixed, one, over, report)
+    assert {note["id"]: [(p["status"], p["old"]["start"], p["old"]["stop"]) for p in note["pieces"]]
+            for note in report["notes"]} == {
+        "off": [("offline", 0, 2)], "a": [("unique", 3, 7)], "dissolve": [("transition", 7, 10)],
+        "sub": [("nested", 10, 12)],
+        "cross": [("unique", 5, 7), ("transition", 7, 10), ("nested", 10, 12), ("deleted", 12, 13)],
+        "tail": [("deleted", 12, 14)]}, report["notes"]
+    assert report["held"] == ["off", "dissolve", "sub", "cross", "tail"]
+    assert [(note["id"], note["source"]) for note in report["carry"]] == [
+        ("cross#0", dict(start=2, stop=4)), ("cross#3", dict(start=4, stop=5)),
+        ("tail#0", dict(start=4, stop=6))]
+    # In the new cut they are never a target: A[4,6) sits under a nested
+    # sequence and a transition there and still lands nowhere. The export
+    # hands them back untouched, and the official library reads it.
+    placed = request(0, 0, [("a", 3, 7), ("tail", 12, 14)])
+    later = timeline([dissolve(1, 1), nested(2), offline(2), clip(a, 0, 4, 24), dissolve(0, 1)])
+    paths = files(directory, mixed, later, placed)
+    report = invoke("plan", paths)
+    verify_report(mixed, later, placed, report)
+    assert report["held"] == ["tail"] and len(report["transfers"]) == 1
+    output = directory / "mixed.otio"
+    assert invoke("apply", [*paths, output]) == report
+    verify_export(later, placed, report, output, otio)
+    # A clip may name no media at all; that is offline too.
+    bare = timeline([dict(offline(3), media_reference=None), clip(a, 0, 4, 24, legacy=True)])
+    named = request(0, 0, [("bare", 0, 2), ("a", 3, 5)])
+    report = invoke("plan", files(directory, bare, one, named))
+    verify_report(bare, one, named, report)
+    assert [piece["status"] for piece in report["notes"][0]["pieces"]] == ["offline"]
+    for bad, error in [
+        (timeline([dict(offline(3), source_range=None)]),
+         "a clip with no media of its own (MissingReference.1) has to say how long it is with a source_range"),
+        (timeline([dict(offline(3), media_reference=None, source_range=None)]),
+         "a clip with no media of its own (none) has to say how long it is with a source_range"),
+        (timeline([dissolve(0, 0)]), "a transition has to last at least one frame"),
+        (timeline([dict(nested(3), source_range=None)]),
+         "a nested sequence has to say how long it is with a source_range"),
+    ]:
+        invoke("plan", files(directory, one, bad, single), error)
+    checked.append("children that hold no footage")
+
+    # A clip without a source range uses as much of its media as there is.
+    whole = timeline([dict(clip(a, 0, 4, 24), source_range=None)])
+    assert whole["tracks"]["children"][0]["children"][0]["source_range"] is None
+    used = invoke("plan", files(directory, whole, one, single))
+    verify_report(whole, one, single, used)
+    assert used["old_duration"] == 2000 and [t["placement"] for t in used["transfers"]] == [
+        dict(clip=0, range=dict(start=0, stop=1))]
+
+    # A media key is matched byte for byte. The composed and the decomposed
+    # spelling of one name, as macOS and other systems each write it, are
+    # two media as far as this tool can tell.
+    composed, decomposed = "file:///shoot/\u00e9.mov", "file:///shoot/e\u0301.mov"
+    assert composed != decomposed
+    here, there = timeline([clip(composed, 0, 4, 24)]), timeline([clip(decomposed, 0, 4, 24)])
+    split = invoke("plan", files(directory, here, there, single))
+    verify_report(here, there, single, split)
+    assert split["held"] == ["n"] and [note["media"] for note in split["carry"]] == [composed]
+    checked.append("a clip by its media's range, a name byte for byte")
+
+    # A note may hold quotes, newlines and a control character. It comes
+    # back as the marker's name, and the file is still JSON.
+    tricky = request(0, 0, [dict(id="quoted", text='He said "cut here",\n\tthen left\u0001', start=0)])
+    paths = files(directory, one, one, tricky)
+    report = invoke("plan", paths)
+    output = directory / "tricky.otio"
+    invoke("apply", [*paths, output])
+    verify_export(one, tricky, report, output, otio)
+    assert track(json.loads(output.read_text(encoding="utf-8")))["markers"][0]["name"] == tricky["notes"][0]["text"]
+    checked.append("quotes, newlines and control characters")
+
+    # Markers read back count towards the limit on annotations, and the
+    # limit is the same one: three markers and 9,997 notes are ten thousand.
+    first = request(0, 0, [(f"n{i}", i, None) for i in range(3)])
+    marked = directory / "counted.otio"
+    invoke("apply", [*files(directory, one, timeline([clip(a, 0, 4, 24)]), first), marked])
+    read = json.loads(marked.read_text(encoding="utf-8"))
+    for count, error in ((9997, None), (9998, "too many annotations; limit is 10000")):
+        notes = request(0, 0, [(f"m{i}", i % 4, None) for i in range(count)], from_markers=True)
+        paths = files(directory, read, one, notes)
+        if error is None:
+            found = invoke("plan", paths, timeout=600)
+            verify_report(read, one, notes, found, imported_notes(read, 0))
+            assert len(found["notes"]) == 10000 and len(found["transfers"]) == 10000
+        else:
+            invoke("plan", paths, error)
+    checked.append("markers read back count towards the limit")
+
+    # A finite number too large for a double would come back infinite:
+    # 1e309 is a JSON number, and the only thing the codec can write for it
+    # is Inf. Planning reads on, since nothing is written; applying refuses
+    # and leaves nothing behind. A number that already says it is not finite
+    # passes, spelled as the codec spells it, Inf, -Inf or NaN; OpenTimelineIO
+    # reads those and Infinity alike.
+    lenient = ["Inf", "Infinity", "-Inf", "-Infinity", "NaN"]
+    hot = copy.deepcopy(one)
+    hot["metadata"] = {"hot": "@hot@", "deeper": [{"hotter": "@hotter@"}]}
+    for token in (*lenient, "1e309", "-1e309", "1e400", "1.7976931348623159e308",
+                  "1e999999999"):
+        text = (json.dumps(hot).replace('"@hot@"', token, 1)
+                .replace('"@hotter@"', f"[{token}]", 1))
+        paths = files(directory, one, one, single)
+        paths[1].write_text(text)
+        assert invoke("plan", paths)["ok"]
+        output = directory / "hot.otio"
+        output.unlink(missing_ok=True)
+        if token in lenient:
+            invoke("apply", [*paths, output])
+            written_text = output.read_text(encoding="utf-8")
+            spelled = token.replace("Infinity", "Inf")
+            assert f'"hot":{spelled},' in written_text and f'"hotter":[{spelled}]' in written_text, written_text
+            output.unlink()
+        else:
+            invoke("apply", [*paths, output],
+                   f"the new cut holds a number too large to write back unchanged: {token}")
+            assert not output.exists()
+    checked.append("numbers too large for a double")
+    return len(checked)
+
+
 def fetch_fixture():
     source = Request(FIXTURE, headers={"User-Agent": "MoonReConform-verification/0.1"})
     for attempt in range(3):
@@ -1177,6 +1479,9 @@ def main():
               f"{verify_beyond_enumeration(work, opentimelineio)} (pieces)")
         print("The command's own failures, each message checked whole: "
               f"{verify_command(work)} groups")
+        print("Corners: empty cuts, blank and endless notes, a closed pipe, 29.97 fps, children without "
+              f"footage, numbers, names and structure kept as written: "
+              f"{verify_corners(work, opentimelineio)} groups")
         print("Audio tracks, picture and sound side by side, two rounds: "
               f"{dict(verify_audio(work, opentimelineio))}")
         print("Budgets and counts, one step short accepted and one step past refused: "

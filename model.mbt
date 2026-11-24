@@ -6,9 +6,26 @@ pub(all) struct Span {
 }
 
 ///|
+/// Why a stretch of a track has no footage a note could be placed on.
+pub(all) enum Unplaceable {
+  /// A clip whose media has no location of its own: missing, embedded in
+  /// the document, or made by the application, as a title or a matte is.
+  Offline
+  /// A transition between two clips. Its frames come from the clips on
+  /// either side and belong to the range of neither.
+  Transition
+  /// A sequence nested into the track as one clip.
+  Nested
+}
+
+///|
+/// One child of a track. `Gap` is black. `Unplaceable` takes up time like
+/// any child but holds no footage a note can be placed on; the Int64 is its
+/// length in frames.
 pub(all) enum Shot {
   Clip(String, Span)
   Gap(Int64)
+  Unplaceable(Unplaceable, Int64)
 }
 
 ///|
@@ -33,11 +50,27 @@ pub(all) struct Placement {
 }
 
 ///|
+/// What became of one piece of an annotation. `GapPiece`, `OfflinePiece`,
+/// `TransitionPiece` and `NestedPiece` have no footage and no candidates,
+/// so an annotation with such a piece is held.
 pub(all) enum PieceKind {
   Unique
   Ambiguous
   Deleted
   GapPiece
+  OfflinePiece
+  TransitionPiece
+  NestedPiece
+}
+
+///|
+fn piece_kind(why : Unplaceable?) -> PieceKind {
+  match why {
+    None => GapPiece
+    Some(Offline) => OfflinePiece
+    Some(Transition) => TransitionPiece
+    Some(Nested) => NestedPiece
+  }
 }
 
 ///|

@@ -57,8 +57,48 @@ fn existing_annotation(marker : Json) -> (String, Int32)? {
 }
 
 ///|
+/// Refuse a document that holds a number which would come back meaning
+/// something else. `1e309` is a JSON number and not a double: read, it is
+/// infinity, and the only thing the codec can write is `Inf`. The text
+/// said something finite and would come back infinite, so such a number is
+/// refused by the token as it was written. The codec keeps that token, as
+/// it keeps the text of every finite number; for a number that already
+/// says it is not finite, `Inf` or `Infinity`, it keeps none, and that
+/// number passes: OpenTimelineIO reads both spellings and writes `Inf`, and
+/// a spelling is not a value. The walk keeps its own stack, so a document
+/// nested to any depth costs memory and not call frames.
+fn check_numbers(root : Json) -> Unit raise ReconformError {
+  let pending : Array[Json] = [root]
+  let mut i = 0
+  while i < pending.length() {
+    match pending[i] {
+      Number(n, repr~) =>
+        match repr {
+          Some(token) if n.is_inf() =>
+            raise Invalid(
+              "the new cut holds a number too large to write back unchanged: " +
+              token,
+            )
+          _ => ()
+        }
+      Array(items) => pending.append(items)
+      Object(fields) =>
+        for _, item in fields {
+          pending.push(item)
+        }
+      _ => ()
+    }
+    i += 1
+  }
+}
+
+///|
 /// Append resolved markers to the new track. The input object is left
 /// unchanged, and so is the whole document when nothing transfers.
+///
+/// A document that holds a finite number too large for a double is
+/// refused, since the alternative is to hand on a document that says
+/// something else. Numbers that are not finite already pass.
 ///
 /// An annotation read back from an earlier marker supersedes that marker
 /// once it transfers: the copy an editor already conformed into the new
@@ -71,6 +111,7 @@ pub fn with_markers(
   fps~ : Int32,
   resolution : Resolution,
 ) -> Json raise ReconformError {
+  check_numbers(root)
   let timeline = read_otio(root, track_index~, fps~)
   let track = otio_track(root, track_index).copy()
   if resolution.transfers.length() == 0 {

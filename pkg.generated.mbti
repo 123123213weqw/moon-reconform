@@ -55,6 +55,9 @@ pub(all) enum PieceKind {
   Ambiguous
   Deleted
   GapPiece
+  OfflinePiece
+  TransitionPiece
+  NestedPiece
 }
 
 pub(all) struct Placement {
@@ -85,6 +88,7 @@ pub(all) struct Selection {
 pub(all) enum Shot {
   Clip(String, Span)
   Gap(Int64)
+  Unplaceable(Unplaceable, Int64)
 }
 
 pub(all) struct Span {
@@ -106,6 +110,12 @@ pub(all) struct Transfer {
   piece : Int32
   placement : Placement
   origin : (String, Int32)?
+}
+
+pub(all) enum Unplaceable {
+  Offline
+  Transition
+  Nested
 }
 
 // Type aliases
