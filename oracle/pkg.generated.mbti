@@ -1,0 +1,169 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "123123213weqw/moon_reconform/oracle"
+
+import {
+  "123123213weqw/moon_reconform",
+  "moonbitlang/core/debug",
+  "moonbitlang/core/json",
+}
+
+// Values
+pub fn agree(String) -> Bool raise
+
+pub fn approximate(String) -> Double
+
+pub fn black(Int64) -> @json.Json
+
+pub fn child_of(Child, far? : Int64) -> @json.Json?
+
+pub fn copied(@json.Json) -> @json.Json
+
+pub fn duration(Int64, Int64) -> @json.Json
+
+pub fn duration_of(Array[Slot]) -> Int64
+
+pub let empty : Tally
+
+pub fn entry(@json.Json, String) -> @json.Json
+
+pub fn expected(Array[@moon_reconform.NoteReport], Array[@moon_reconform.Selection]) -> (@moon_reconform.Resolution, Array[@moon_reconform.Note])
+
+pub fn exported(@json.Json, Int32, @moon_reconform.Resolution, Array[Slot]) -> @json.Json
+
+pub let far_away : Int64
+
+pub fn frame(Int64) -> @json.Json
+
+pub fn frames(Array[Slot]) -> Array[(Int32, String?, Int64?)]
+
+pub fn items(@json.Json) -> Array[@json.Json]
+
+pub fn judged(String) -> Int64?
+
+pub let last : Int64
+
+pub let long_lead : Int64
+
+pub fn markers_on(@json.Json) -> Array[@json.Json]
+
+pub let media_keys : ReadOnlyArray[String]
+
+pub fn nothing() -> @json.Json
+
+pub fn origin_key(@json.Json) -> (String, Int32)?
+
+pub fn own_marker(String, Int64, Int64) -> @json.Json
+
+pub fn plain_track(Array[@json.Json]) -> @json.Json
+
+pub fn planned(Array[Slot], Array[Slot], @moon_reconform.Note) -> Array[@moon_reconform.Piece]
+
+pub fn read_as(String) -> Result[Int64, String] raise
+
+pub fn read_back(@json.Json, Int32) -> Array[@moon_reconform.Note]
+
+pub fn render(Case) -> String
+
+pub fn report_of(Int64, Int64, Array[@moon_reconform.NoteReport], @moon_reconform.Resolution, Array[@moon_reconform.Note]) -> @json.Json
+
+pub fn sample(UInt64, size? : Int32) -> Case
+
+pub fn self_mapped(Cut, Array[Mark], far? : Int64) -> Unit raise
+
+pub fn sequence(@json.Json, @json.Json?) -> @json.Json
+
+pub fn slots(@json.Json, Int32) -> Array[Slot]
+
+pub fn span(Int64, Int64) -> @json.Json
+
+pub fn text(@json.Json) -> String
+
+pub fn track_of(Array[Child], Bool, Array[@json.Json], far? : Int64, lead? : Int64) -> @json.Json
+
+pub fn track_of_document(@json.Json, Int32) -> @json.Json
+
+pub fn verify(Case) -> Tally raise
+
+pub fn walk(Array[Slot], Array[Slot], @moon_reconform.Note, Array[@moon_reconform.Piece]) -> Unit raise
+
+pub fn whole(@json.Json) -> Int64
+
+pub fn with_markers_on(@json.Json, Int32, Array[@json.Json]) -> @json.Json
+
+pub fn words(Error) -> String
+
+pub fn written(Token) -> String
+
+// Errors
+
+// Types and methods
+#derive(Eq, @debug.Debug)
+pub(all) struct Case {
+  cuts : Array[Cut]
+  marks : Array[Mark]
+  picks : Array[Int32]
+  switches : Int32
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) struct Child {
+  kind : Int32
+  start : Int32
+  length : Int32
+  media : Int32
+  entering : Int32
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) struct Cut {
+  first : Array[Child]
+  second : Array[Child]
+  layer : Int32
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) struct Mark {
+  at : Int32
+  span : Int32
+  media : Int32
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) struct Slot {
+  child : Int32
+  from : Int64
+  stop : Int64
+  media : String?
+  first : Int64?
+  why : String?
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) struct Tally {
+  rounds : Int64
+  annotations : Int64
+  pieces : Int64
+  transfers : Int64
+  held : Int64
+  markers : Int64
+  distant : Int64
+  lengthy : Int64
+  choices : Int64
+  once : Int64
+  repeated : Int64
+  nowhere : Int64
+  no_footage : Int64
+}
+pub fn Tally::add(Self, Self) -> Self
+
+#derive(Eq, @debug.Debug)
+pub(all) struct Token {
+  sign : Int32
+  whole : Array[Int32]
+  fraction : Array[Int32]
+  power : Array[Int32]
+}
+
+// Type aliases
+
+// Traits

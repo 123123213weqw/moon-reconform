@@ -1,4 +1,5 @@
 ///|
+#derive(Eq, Debug)
 pub(all) struct Request {
   fps : Int32
   old_track : Int32

@@ -2,6 +2,7 @@
 package "123123213weqw/moon_reconform"
 
 import {
+  "moonbitlang/core/debug",
   "moonbitlang/core/json",
 }
 
@@ -29,6 +30,7 @@ pub(all) suberror ReconformError {
 }
 
 // Types and methods
+#derive(Eq, @debug.Debug)
 pub(all) struct Note {
   id : String
   text : String
@@ -37,11 +39,13 @@ pub(all) struct Note {
   origin : (String, Int32)?
 }
 
+#derive(Eq, @debug.Debug)
 pub(all) struct NoteReport {
   note : Note
   pieces : Array[Piece]
 }
 
+#derive(Eq, @debug.Debug)
 pub(all) struct Piece {
   old : Span?
   media : String?
@@ -50,6 +54,7 @@ pub(all) struct Piece {
   kind : PieceKind
 }
 
+#derive(Eq, @debug.Debug)
 pub(all) enum PieceKind {
   Unique
   Ambiguous
@@ -60,11 +65,13 @@ pub(all) enum PieceKind {
   NestedPiece
 }
 
+#derive(Eq, @debug.Debug)
 pub(all) struct Placement {
   clip : Int32
   range : Span
 }
 
+#derive(Eq, @debug.Debug)
 pub(all) struct Request {
   fps : Int32
   old_track : Int32
@@ -74,23 +81,27 @@ pub(all) struct Request {
   from_markers : Bool
 }
 
+#derive(Eq, @debug.Debug)
 pub(all) struct Resolution {
   transfers : Array[Transfer]
   held : Array[String]
 }
 
+#derive(Eq, @debug.Debug)
 pub(all) struct Selection {
   note_id : String
   piece : Int32
   clip : Int32
 }
 
+#derive(Eq, @debug.Debug)
 pub(all) enum Shot {
   Clip(String, Span)
   Gap(Int64)
   Unplaceable(Unplaceable, Int64)
 }
 
+#derive(Eq, @debug.Debug)
 pub(all) struct Span {
   start : Int64
   stop : Int64
@@ -104,6 +115,7 @@ pub fn Timeline::duration(Self) -> Int64
 pub fn Timeline::from_shots(Array[Shot]) -> Self raise ReconformError
 pub fn Timeline::shot_count(Self) -> Int32
 
+#derive(Eq, @debug.Debug)
 pub(all) struct Transfer {
   note_id : String
   text : String
@@ -112,6 +124,7 @@ pub(all) struct Transfer {
   origin : (String, Int32)?
 }
 
+#derive(Eq, @debug.Debug)
 pub(all) enum Unplaceable {
   Offline
   Transition

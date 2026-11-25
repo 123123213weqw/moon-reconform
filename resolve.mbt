@@ -1,4 +1,5 @@
 ///|
+#derive(Eq, Debug)
 pub(all) struct Selection {
   note_id : String
   piece : Int32
@@ -6,6 +7,7 @@ pub(all) struct Selection {
 }
 
 ///|
+#derive(Eq, Debug)
 pub(all) struct Transfer {
   note_id : String
   text : String
@@ -16,6 +18,7 @@ pub(all) struct Transfer {
 }
 
 ///|
+#derive(Eq, Debug)
 pub(all) struct Resolution {
   transfers : Array[Transfer]
   held : Array[String]

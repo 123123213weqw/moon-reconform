@@ -1,5 +1,6 @@
 ///|
 /// Frames use a half-open range [start, stop). Markers use [f, f + 1).
+#derive(Eq, Debug)
 pub(all) struct Span {
   start : Int64
   stop : Int64
@@ -7,6 +8,7 @@ pub(all) struct Span {
 
 ///|
 /// Why a stretch of a track has no footage a note could be placed on.
+#derive(Eq, Debug)
 pub(all) enum Unplaceable {
   /// A clip whose media has no location of its own: missing, embedded in
   /// the document, or made by the application, as a title or a matte is.
@@ -22,6 +24,7 @@ pub(all) enum Unplaceable {
 /// One child of a track. `Gap` is black. `Unplaceable` takes up time like
 /// any child but holds no footage a note can be placed on; the Int64 is its
 /// length in frames.
+#derive(Eq, Debug)
 pub(all) enum Shot {
   Clip(String, Span)
   Gap(Int64)
@@ -35,6 +38,7 @@ pub(all) enum Shot {
 /// nothing from the old cut, so it can follow the footage into any later
 /// version. `origin` names the exported marker the annotation was read
 /// back from, if it was.
+#derive(Eq, Debug)
 pub(all) struct Note {
   id : String
   text : String
@@ -44,6 +48,7 @@ pub(all) struct Note {
 }
 
 ///|
+#derive(Eq, Debug)
 pub(all) struct Placement {
   clip : Int32
   range : Span
@@ -53,6 +58,7 @@ pub(all) struct Placement {
 /// What became of one piece of an annotation. `GapPiece`, `OfflinePiece`,
 /// `TransitionPiece` and `NestedPiece` have no footage and no candidates,
 /// so an annotation with such a piece is held.
+#derive(Eq, Debug)
 pub(all) enum PieceKind {
   Unique
   Ambiguous
@@ -74,6 +80,7 @@ fn piece_kind(why : Unplaceable?) -> PieceKind {
 }
 
 ///|
+#derive(Eq, Debug)
 pub(all) struct Piece {
   /// The piece's range on the old track; absent for a source-anchored
   /// annotation, which never had a position on the old cut.
@@ -85,6 +92,7 @@ pub(all) struct Piece {
 }
 
 ///|
+#derive(Eq, Debug)
 pub(all) struct NoteReport {
   note : Note
   pieces : Array[Piece]

@@ -1,0 +1,7 @@
+import {
+  "123123213weqw/moon_reconform/oracle" @oracle,
+  "moonbitlang/core/debug",
+  "moonbitlang/core/env",
+}
+
+pkgtype(kind: "executable")
