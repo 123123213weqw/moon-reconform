@@ -11,6 +11,9 @@ priv struct LocatedShot {
 ///|
 pub struct Timeline {
   priv shots : Array[LocatedShot]
+  /// Where each shot stops on the track. Every shot holds at least one
+  /// frame, so these only rise, which is what the search is made over.
+  priv stops : FixedArray[Int64]
   priv length_frames : Int64
 }
 
@@ -51,7 +54,11 @@ pub fn Timeline::from_shots(
     located.push({ clip: i, timeline: { start: cursor, stop, }, media, source, why, })
     cursor = stop
   }
-  { shots: located, length_frames: cursor, }
+  {
+    shots: located,
+    stops: FixedArray::makei(located.length(), i => located[i].timeline.stop),
+    length_frames: cursor,
+  }
 }
 
 ///|
@@ -65,18 +72,8 @@ pub fn Timeline::shot_count(self : Timeline) -> Int32 {
 }
 
 ///|
-fn Timeline::first_shot(self : Timeline, start : Int64) -> Int32 {
-  let mut lo = 0
-  let mut hi = self.shots.length()
-  while lo < hi {
-    let mid = lo + (hi - lo) / 2
-    if self.shots[mid].timeline.stop <= start {
-      lo = mid + 1
-    } else {
-      hi = mid
-    }
-  }
-  lo
+fn Timeline::first_shot(self : Timeline, start : Int64) -> Int {
+  @spans.first_above(self.stops, start)
 }
 
 ///|

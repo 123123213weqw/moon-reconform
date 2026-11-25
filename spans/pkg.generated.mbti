@@ -1,0 +1,23 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "123123213weqw/moon_reconform/spans"
+
+// Values
+pub fn first_above(FixedArray[Int64], Int64) -> Int32
+
+pub fn first_high(FixedArray[Int64], Int64, Int64) -> Int32
+
+pub fn intersection(Int64, Int64, Int64, Int64) -> (Int64, Int64)?
+
+pub let last : Int64
+
+pub fn running_max(FixedArray[Int64], Int64) -> FixedArray[Int64]
+
+pub fn summed(Int64, Int64) -> Int64?
+
+// Errors
+
+// Types and methods
+
+// Type aliases
+
+// Traits

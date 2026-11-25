@@ -1,7 +1,10 @@
 ///|
 priv struct SourceGroup {
   shots : Array[LocatedShot]
-  max_stop : Array[Int64]
+  /// At every shot, the furthest any shot of this footage so far reaches
+  /// into it. These only rise, so the place a search can begin at can be
+  /// found by halves.
+  reach : FixedArray[Int64]
 }
 
 ///|
@@ -33,16 +36,8 @@ fn index_sources(timeline : Timeline) -> Map[String, SourceGroup] {
         order
       }
     })
-    let max_stop = []
-    let mut maximum = 0L
-    for shot in shots {
-      let stop = source_span(shot).stop
-      if stop > maximum {
-        maximum = stop
-      }
-      max_stop.push(maximum)
-    }
-    index[key] = { shots, max_stop, }
+    let stops = FixedArray::makei(shots.length(), i => source_span(shots[i]).stop)
+    index[key] = { shots, reach: @spans.running_max(stops, 0L) }
   }
   index
 }
@@ -53,16 +48,9 @@ fn SourceGroup::overlapping(
   target : Span,
   budget : Ref[Int32],
 ) -> Array[LocatedShot] raise ReconformError {
-  let mut lo = 0
-  let mut hi = self.shots.length()
-  while lo < hi {
-    let mid = lo + (hi - lo) / 2
-    if self.max_stop[mid] <= target.start {
-      lo = mid + 1
-    } else {
-      hi = mid
-    }
-  }
+  // No shot before this place reaches past the first frame of the range,
+  // so none of them can show any of it.
+  let lo = @spans.first_above(self.reach, target.start)
   let result = []
   for i = lo; i < self.shots.length(); i = i + 1 {
     let shot = self.shots[i]

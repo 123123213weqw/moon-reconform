@@ -118,10 +118,10 @@ fn Span::checked(self : Span, context : String) -> Unit raise ReconformError {
 
 ///|
 fn add_frames(a : Int64, b : Int64) -> Int64 raise ReconformError {
-  if b < 0L || a < 0L || a > max_frames - b {
-    raise Limit("timeline exceeds exact frame range")
+  match @spans.summed(a, b) {
+    Some(total) => total
+    None => raise Limit("timeline exceeds exact frame range")
   }
-  a + b
 }
 
 ///|

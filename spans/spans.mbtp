@@ -1,0 +1,235 @@
+///|
+/// A range that lies inside both of two others: it starts no earlier than
+/// either starts and stops no later than either stops, and it holds a frame.
+predicate inside_both(
+  a_start : Int64,
+  a_stop : Int64,
+  b_start : Int64,
+  b_stop : Int64,
+  lo : Int64,
+  hi : Int64,
+) {
+  lo < hi && a_start <= lo && b_start <= lo && hi <= a_stop && hi <= b_stop
+}
+
+///|
+/// `place` is where one of the two ranges starts.
+predicate starts_either(place : Int64, a_start : Int64, b_start : Int64) {
+  place == a_start || place == b_start
+}
+
+///|
+/// `place` is where one of the two ranges stops.
+predicate stops_either(place : Int64, a_stop : Int64, b_stop : Int64) {
+  place == a_stop || place == b_stop
+}
+
+///|
+/// The first range is over before the second begins, or the other way round.
+predicate one_ends_first(
+  a_start : Int64,
+  a_stop : Int64,
+  b_start : Int64,
+  b_stop : Int64,
+) {
+  a_stop <= b_start || b_stop <= a_start
+}
+
+///|
+/// What the intersection of two half-open ranges is: where they overlap,
+/// the largest range inside both, not empty, and cut where one of the two
+/// is cut; where they do not, none.
+predicate intersection_ok(
+  a_start : Int64,
+  a_stop : Int64,
+  b_start : Int64,
+  b_stop : Int64,
+  result : Option[(Int64, Int64)],
+) {
+  match result {
+    None => one_ends_first(a_start, a_stop, b_start, b_stop)
+    Some((lo, hi)) =>
+      inside_both(a_start, a_stop, b_start, b_stop, lo, hi) &&
+      starts_either(lo, a_start, b_start) &&
+      stops_either(hi, a_stop, b_stop)
+  }
+}
+
+///|
+/// Every earlier place is at most every later one.
+predicate rising(values : FixedArray[Int64]) {
+  ∀ i : Int, ∀ j : Int,
+    ((0 <= i) && (i <= j) && (j < values.length())) →
+      values[i] <= values[j]
+}
+
+///|
+/// Up to `n`, every earlier place is at most every later one.
+predicate rising_upto(reach : FixedArray[Int64], n : Int) {
+  ∀ i : Int, ∀ j : Int,
+    ((0 <= i) && (i <= j) && (j < n)) →
+      reach[i] <= reach[j]
+}
+
+///|
+/// At most `n` places matter, and there are that many.
+predicate within(n : Int, length : Int) {
+  (0 <= n) && (n <= length)
+}
+
+///|
+/// The first place whose value is above `bound`: every place before it is
+/// at or below, and every place from it on is above.
+predicate first_above_ok(
+  values : FixedArray[Int64],
+  bound : Int64,
+  result : Int,
+) {
+  within(result, values.length()) &&
+  (∀ j : Int,
+    ((0 <= j) && (j < result)) → values[j] <= bound) &&
+  (∀ j : Int,
+    ((result <= j) && (j < values.length())) → bound < values[j])
+}
+
+///|
+/// `place` is the largest of `from` and of the values up to `i`: at least
+/// each of them, and at most anything that is.
+predicate largest_upto(
+  values : FixedArray[Int64],
+  from : Int64,
+  i : Int,
+  place : Int64,
+) {
+  (from <= place) &&
+  (∀ k : Int, ((0 <= k) && (k <= i)) → values[k] <= place) &&
+  (∀ b : Int64,
+    ((from <= b) && (∀ k : Int, ((0 <= k) && (k <= i)) → values[k] <= b)) →
+      place <= b)
+}
+
+///|
+/// The running maximum: as long as the values, never falling behind
+/// itself, and at every place the largest of `from` and the values so far.
+predicate running_max_ok(
+  values : FixedArray[Int64],
+  from : Int64,
+  result : FixedArray[Int64],
+) {
+  (result.length() == values.length()) &&
+  rising(result) &&
+  (∀ i : Int,
+    ((0 <= i) && (i < values.length())) →
+      largest_upto(values, from, i, result[i]))
+}
+
+///|
+/// Every value before `r` is at or below `bound`.
+predicate at_or_below_before(
+  values : FixedArray[Int64],
+  bound : Int64,
+  r : Int,
+) {
+  ∀ j : Int, ((0 <= j) && (j < r)) → values[j] <= bound
+}
+
+///|
+/// Neither `from` nor any value before `n` is above `bound`.
+predicate nothing_high_before(
+  values : FixedArray[Int64],
+  from : Int64,
+  bound : Int64,
+  n : Int,
+) {
+  (from <= bound) &&
+  (∀ k : Int, ((0 <= k) && (k < n)) → values[k] <= bound)
+}
+
+///|
+/// Up to `result` something is above `bound`: the search starts no later
+/// than it has to.
+predicate starts_no_earlier(
+  values : FixedArray[Int64],
+  from : Int64,
+  bound : Int64,
+  result : Int,
+) {
+  (result < values.length()) →
+    nothing_high_before(values, from, bound, result + 1) == false
+}
+
+///|
+/// The first place from which some value is above `bound`: every value
+/// before it is at or below, and up to it some value or `from` is above.
+/// It is where a search for a range that starts at `bound` may begin.
+predicate first_high_ok(
+  values : FixedArray[Int64],
+  from : Int64,
+  bound : Int64,
+  result : Int,
+) {
+  within(result, values.length()) &&
+  at_or_below_before(values, bound, result) &&
+  starts_no_earlier(values, from, bound, result)
+}
+
+///|
+/// The sum of two counts where it can still be named, and none where it
+/// cannot: a negative count, or a sum past the last frame.
+predicate summed_ok(a : Int64, b : Int64, result : Option[Int64]) {
+  match result {
+    None => (a < 0L) || (b < 0L) || (9007199254740991L < a + b)
+    Some(total) =>
+      (0L <= a) &&
+      (0L <= b) &&
+      (total == a + b) &&
+      (total <= 9007199254740991L)
+  }
+}
+
+///|
+/// No range is the intersection of a range that ends at or before
+/// `b_start` and one that begins there. A shot the search skips therefore
+/// shares no frame with a range that starts at `b_start`.
+lemma ended_before_shares_no_frame(
+  a_start : Int64,
+  a_stop : Int64,
+  b_start : Int64,
+  b_stop : Int64,
+  lo : Int64,
+  hi : Int64,
+) where {
+  proof_require: a_stop <= b_start,
+  proof_require: intersection_ok(a_start, a_stop, b_start, b_stop, Some((lo, hi))),
+  proof_ensure: false,
+} {}
+
+///|
+/// The value at `k` is at or after `stop`.
+predicate at_or_after(values : FixedArray[Int64], k : Int, stop : Int64) {
+  stop <= values[k]
+}
+
+///|
+/// Every value from `k` on is at or after `stop`.
+predicate at_or_after_from(
+  values : FixedArray[Int64],
+  k : Int,
+  stop : Int64,
+) {
+  ∀ j : Int, ((k <= j) && (j < values.length())) → stop <= values[j]
+}
+
+///|
+/// Where values only rise, nothing from `k` on lies before `stop` once
+/// the value at `k` does not: a search may stop there.
+lemma rising_keeps_it_after(
+  values : FixedArray[Int64],
+  k : Int,
+  stop : Int64,
+) where {
+  proof_require: rising(values),
+  proof_require: within(k, values.length()),
+  proof_require: at_or_after(values, k, stop),
+  proof_ensure: at_or_after_from(values, k, stop),
+} {}

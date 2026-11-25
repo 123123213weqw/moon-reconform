@@ -8,5 +8,9 @@ import {
 }
 
 import {
+  "123123213weqw/moon_reconform/spans" @spans,
+} for "wbtest"
+
+import {
   "moonbitlang/core/bench",
 } for "test"
