@@ -45,7 +45,10 @@ jobs:
         if: matrix.target == 'js'
         run: python scripts/verify.py --release --quick
   prove:
-    runs-on: ubuntu-latest
+    # Why3 1.7.2 has a signal handler in C with the wrong signature, which
+    # compilers took as a warning until GCC 14 made it an error. ubuntu-latest
+    # is past that; 24.04's compiler still builds Why3 as it was written.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       ALTERGO_VERSION: 2.6.2
