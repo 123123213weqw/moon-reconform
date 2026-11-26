@@ -35,6 +35,8 @@ jobs:
         run: moon test --target ${{ matrix.target }} --deny-warn
       - name: A campaign of twenty thousand generated reviews against the oracle
         run: moon run cmd/campaign --target ${{ matrix.target }} --deny-warn -- 20000 1 12
+      - name: A campaign of twenty thousand reviews a fuzzer changed
+        run: moon run cmd/campaign --target ${{ matrix.target }} --deny-warn -- mutate 20000 1
       - name: Independent oracle and CLI checks, limits included
         if: matrix.target == 'js'
         run: python scripts/verify.py --live-fixture --otio-samples
