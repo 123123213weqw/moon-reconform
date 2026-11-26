@@ -191,7 +191,21 @@ pub fn walk(
       _ => fail("oracle: a piece claims both anchors or neither: " + status(piece.kind))
     }
     let children : Map[Int32, Unit] = Map([])
-    for frame = at; frame < end; frame = frame + 1L {
+    // A piece is walked a frame at a time where it is short enough to. A
+    // long one, which only a fuzzer makes of an annotation on footage, is
+    // walked at its first and last frame; its candidates are still held to
+    // its whole length below.
+    let length = end - at
+    let visits : Array[Int64] = if length <= 4096L {
+      let all = []
+      for offset = 0L; offset < length; offset = offset + 1L {
+        all.push(at + offset)
+      }
+      all
+    } else {
+      [at, end - 1L]
+    }
+    for frame in visits {
       let (child, media, source) = match note.media {
         None => old[frame.to_int()]
         Some(key) => (-1, Some(key), Some(frame))
@@ -441,15 +455,22 @@ fn marker_for(transfer : @tool.Transfer, fresh : Array[Slot]) -> Json {
 }
 
 ///|
-/// The document the tool must write: the new cut with every marker kept but
-/// the stale copies of the annotations that transferred, and one fresh
-/// marker per transfer after them.
+/// The document the tool must write: the new cut as it came where nothing
+/// transfers; otherwise the new cut with every marker kept but the stale
+/// copies of the annotations that transferred, and one fresh marker per
+/// transfer after them.
 pub fn exported(
   fresh : Json,
   new_track : Int32,
   resolution : @tool.Resolution,
   laid : Array[Slot],
 ) -> Json {
+  // Nothing transfers, so the document is handed back as it came: without
+  // so much as an empty list of markers on a track that listed none.
+  if resolution.transfers.length() == 0 {
+    return fresh
+  }
+
   let superseded : Map[(String, Int32), Unit] = Map([])
   for transfer in resolution.transfers {
     match transfer.origin {

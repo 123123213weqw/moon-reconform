@@ -139,9 +139,11 @@ fn examine(
   cursor : Int,
   choose : Bool,
   walked~ : Bool,
+  fps~ : Int32 = 24,
+  picked~ : Array[@tool.Selection] = [],
 ) -> Outcome raise {
-  let before = @tool.read_otio(old, track_index=old_track, fps=24)
-  let after = @tool.read_otio(fresh, track_index=new_track, fps=24)
+  let before = @tool.read_otio(old, track_index=old_track, fps~)
+  let after = @tool.read_otio(fresh, track_index=new_track, fps~)
   let reports = @tool.plan(before, after, notes)
   let old_slots = slots(old, old_track)
   let fresh_slots = slots(fresh, new_track)
@@ -185,7 +187,7 @@ fn examine(
     }
   }
   let (selections, after_picks) =
-    if choose { choose_for(reports, picks, cursor) } else { ([], cursor) }
+    if choose { choose_for(reports, picks, cursor) } else { (picked, cursor) }
   let resolution = @tool.resolve(reports, selections)
   let (settled, carried) = expected(model, selections)
   if resolution != settled {
@@ -224,7 +226,7 @@ fn examine(
   let written = @tool.with_markers(
     fresh,
     track_index=new_track,
-    fps=24,
+    fps~,
     resolution,
   )
   let document = exported(fresh, new_track, settled, fresh_slots)
@@ -378,6 +380,47 @@ pub fn verify(case : Case) -> Tally raise {
   } else {
     tally
   }
+}
+
+///|
+/// Hold a review that was not generated but changed, as a fuzzer changes
+/// one, to the same standard as a generated one: the tool refuses it in so
+/// many words, or answers it exactly as the oracle says. The request's own
+/// frame rate and its own selections are what the tool is given.
+pub fn checked(old : Json, fresh : Json, asked : Json) -> Unit raise {
+  let request = @tool.read_request(asked)
+  // The tool reads both cuts first: a document it will not read is not
+  // one the oracle sets out to lay out.
+  ignore(@tool.read_otio(old, track_index=request.old_track, fps=request.fps))
+  ignore(@tool.read_otio(fresh, track_index=request.new_track, fps=request.fps))
+  let notes = request.notes.copy()
+  if request.from_markers {
+    for note in @tool.read_notes_from_markers(
+      old,
+      track_index=request.old_track,
+      fps=request.fps,
+    ) {
+      notes.push(note)
+    }
+  }
+  let old_length = duration_of(slots(old, request.old_track))
+  let fresh_length = duration_of(slots(fresh, request.new_track))
+  let walked = old_length <= 20000L && fresh_length <= 20000L
+  ignore(
+    examine(
+      old,
+      fresh,
+      request.old_track,
+      request.new_track,
+      notes,
+      [],
+      0,
+      false,
+      walked~,
+      fps=request.fps,
+      picked=request.selections,
+    ),
+  )
 }
 
 ///|

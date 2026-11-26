@@ -20,18 +20,33 @@ fn plain_digits(text : String) -> Int64? {
 }
 
 ///|
+/// What a campaign runs over: the reviews the generator draws, or reviews
+/// a fuzzer changes.
+priv enum Mode {
+  Reviews
+  Mutations
+}
+
+///|
 /// Run the oracle over reviews in bulk, in one process, on whatever backend
 /// this was built for. Every review is one seed's, so a failure names its
-/// seed and the review shrinks to nothing: the same seed replays it.
+/// seed and the same seed replays it.
 ///
 ///     moon run cmd/campaign --target native -- 1000000 1 12
+///     moon run cmd/campaign --target native -- mutate 1000000 1
 ///
 /// The numbers are how many reviews, the first seed, and how large a review
-/// may grow; left out, they are two hundred thousand, one and twelve.
+/// may grow; left out, they are two hundred thousand, one and twelve. The
+/// word `mutate` runs reviews a fuzzer changed instead, where the third
+/// number does not apply.
 fn main {
   let asked = [200000L, 1L, 12L]
   let mut found = 0
+  let mut mode = Reviews
   for argument in @env.args() {
+    if argument == "mutate" {
+      mode = Mutations
+    }
     match plain_digits(argument) {
       Some(value) =>
         if found < 3 {
@@ -43,7 +58,15 @@ fn main {
   }
   let count = asked[0]
   let first = asked[1]
-  let size = asked[2].to_int()
+  match mode {
+    Reviews => reviews(first, count, asked[2].to_int())
+    Mutations => mutations(first, count)
+  }
+}
+
+///|
+/// Generated reviews, each held whole to the oracle.
+fn reviews(first : Int64, count : Int64, size : Int) -> Unit {
   let began = @env.now()
   let mut tally = @oracle.empty
   let mut failures = 0L
@@ -74,6 +97,51 @@ fn main {
     " ms; " +
     @debug.to_string(tally).replace(old=" Tally", new="") +
     "; failures " +
+    failures.to_string(),
+  )
+  if failures > 0L {
+    @env.exit(1)
+  }
+}
+
+///|
+/// Reviews a fuzzer changed, each its seed's: refused in so many words, or
+/// answered exactly as the oracle says. Anything else is a failure, and
+/// names its seed and its documents.
+fn mutations(first : Int64, count : Int64) -> Unit {
+  let began = @env.now()
+  let mut answered = 0L
+  let mut refused = 0L
+  let mut failures = 0L
+  for seed = first; seed < first + count; seed = seed + 1L {
+    let documents = @oracle.mangled(seed.reinterpret_as_uint64())
+    try {
+      @oracle.checked(documents[0], documents[1], documents[2])
+      answered += 1L
+    } catch {
+      @core.Invalid(_) | @core.Limit(_) => refused += 1L
+      error => {
+        failures += 1L
+        println("seed " + seed.to_string() + ": " + @oracle.words(error))
+        println(@oracle.shown_documents(documents))
+      }
+    }
+  }
+  let took = (@env.now() - began).reinterpret_as_int64()
+  println(
+    "mutations on " +
+    target() +
+    ": " +
+    count.to_string() +
+    " changed reviews from seed " +
+    first.to_string() +
+    " in " +
+    took.to_string() +
+    " ms; " +
+    answered.to_string() +
+    " answered as the oracle says, " +
+    refused.to_string() +
+    " refused; failures " +
     failures.to_string(),
   )
   if failures > 0L {

@@ -438,3 +438,36 @@ test "an annotation is not exported twice onto one track" {
     () => ignore(@tool.with_markers(written, track_index=0, fps=24, resolution)),
   )
 }
+
+///|
+/// A track does not have to list markers at all. Where nothing transfers
+/// the cut is handed back as it came, without an empty list of markers
+/// added; where something does, the list is made for it.
+test "a track that lists no markers is left as it came when nothing transfers" {
+  let (document, cut) = one_cut()
+  let bare = copied(document)
+  guard track_of_document(bare, 0) is Object(fields) else {
+    fail("the track is not an object")
+  }
+  fields.remove("markers")
+  // The footage is gone from the new cut, so the annotation is held.
+  let gone = sequence(plain_track([black(4L)]), None)
+  let empty = sequence(plain_track([black(4L)]), None)
+  let reports = @tool.plan(cut, @tool.read_otio(gone, track_index=0, fps=24), notes_of(asked_for([annotation(0, 0L)], [])))
+  let resolution = @tool.resolve(reports, [])
+  assert_eq(resolution.transfers.length(), 0)
+  let written = @tool.with_markers(gone, track_index=0, fps=24, resolution)
+  if written != gone {
+    fail("nothing transfers and the cut is not handed back as it came")
+  }
+  assert_eq(
+    exported(gone, 0, resolution, slots(empty, 0)),
+    written,
+  )
+  // Where something transfers onto a track that lists no markers, the
+  // list is made.
+  let kept = @tool.plan(cut, cut, notes_of(asked_for([annotation(0, 0L)], [])))
+  let made = @tool.with_markers(bare, track_index=0, fps=24, @tool.resolve(kept, []))
+  assert_eq(markers_on(track_of_document(made, 0)).length(), 1)
+  assert_eq(exported(bare, 0, @tool.resolve(kept, []), slots(bare, 0)), made)
+}

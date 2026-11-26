@@ -5,14 +5,19 @@ import {
   "123123213weqw/moon_reconform",
   "moonbitlang/core/debug",
   "moonbitlang/core/json",
+  "moonbitlang/core/quickcheck/splitmix",
 }
 
 // Values
 pub fn agree(String) -> Bool raise
 
+pub fn anything(Int32, @splitmix.RandomState) -> @json.Json
+
 pub fn approximate(String) -> Double
 
 pub fn black(Int64) -> @json.Json
+
+pub fn checked(@json.Json, @json.Json, @json.Json) -> Unit raise
 
 pub fn child_of(Child, far? : Int64) -> @json.Json?
 
@@ -44,6 +49,8 @@ pub let last : Int64
 
 pub let long_lead : Int64
 
+pub fn mangled(UInt64) -> Array[@json.Json]
+
 pub fn markers_on(@json.Json) -> Array[@json.Json]
 
 pub let media_keys : ReadOnlyArray[String]
@@ -71,6 +78,8 @@ pub fn sample(UInt64, size? : Int32) -> Case
 pub fn self_mapped(Cut, Array[Mark], far? : Int64) -> Unit raise
 
 pub fn sequence(@json.Json, @json.Json?) -> @json.Json
+
+pub fn shown_documents(Array[@json.Json]) -> String
 
 pub fn slots(@json.Json, Int32) -> Array[Slot]
 
