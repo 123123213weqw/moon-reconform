@@ -150,7 +150,8 @@ FAULTS = [
     Fault("the input rule drifts",
           Edit(MAIN, 'input file of at most 16 MB: "', 'input file of at most 16MB: "')),
     Fault("the input size limit is loosened",
-          Edit(MAIN, "stats.size > 16_000_000", "stats.size > 17_000_000")),
+          Edit(MAIN, "let input_limit : Int64 = 16_000_000",
+               "let input_limit : Int64 = 17_000_000")),
     Fault("an output failure is raised the old way", Edit(MAIN, "raise Output(error)", "fail(error)")),
     Fault("the help flag is ignored", Edit(MAIN, 'args[2] == "--help"', 'args[2] == "-help"')),
 ]
