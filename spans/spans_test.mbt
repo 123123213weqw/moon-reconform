@@ -37,3 +37,28 @@ test "the sum of two counts, where it can be named" {
   assert_eq(@spans.summed(-1L, 3L), None)
   assert_eq(@spans.summed(3L, -1L), None)
 }
+
+///|
+test "a row of lengths is laid end to end, and stops where one does not fit" {
+  let given = [3L, 0L, 5L, 1L]
+  let whole = @spans.laid_out(FixedArray::makei(given.length(), i => given[i]))
+  assert_eq(whole.upto, 4)
+  let wanted = [3L, 3L, 8L, 9L]
+  assert_eq(whole.stops, FixedArray::makei(wanted.length(), i => wanted[i]))
+  // The last frame that can be named, and then one more.
+  let far = [9007199254740990L, 7L]
+  let stopped = @spans.laid_out(FixedArray::makei(far.length(), i => far[i]))
+  assert_eq(stopped.upto, 1)
+  assert_eq(stopped.stops[0], 9007199254740990L)
+  // A negative length fits nowhere, first or later.
+  for place = 0; place < 3; place = place + 1 {
+    let given = [2L, 2L, 2L]
+    given[place] = -1L
+    let row = @spans.laid_out(FixedArray::makei(3, i => given[i]))
+    assert_eq(row.upto, place)
+  }
+  // Nothing to lay is a whole row of nothing.
+  let none = @spans.laid_out(FixedArray::make(0, 0L))
+  assert_eq(none.upto, 0)
+  assert_eq(none.stops.length(), 0)
+}

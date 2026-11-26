@@ -233,3 +233,205 @@ lemma rising_keeps_it_after(
   proof_require: at_or_after(values, k, stop),
   proof_ensure: at_or_after_from(values, k, stop),
 } {}
+
+///|
+/// Up to `upto`, each stop is its own length past the one before it.
+predicate end_to_end_upto(
+  lengths : FixedArray[Int64],
+  stops : FixedArray[Int64],
+  upto : Int,
+) {
+  ∀ k : Int,
+    ((0 < k) && (k < upto)) →
+      stops[k] == stops[k - 1] + lengths[k]
+}
+
+///|
+/// Where anything was laid, the first stop is the first length.
+predicate starts_with_own_length(
+  lengths : FixedArray[Int64],
+  stops : FixedArray[Int64],
+  upto : Int,
+) {
+  (0 < upto) → (stops[0] == lengths[0])
+}
+
+///|
+/// Up to `upto`, every stop is a frame a document can name.
+predicate frames_upto(stops : FixedArray[Int64], upto : Int) {
+  (∀ k : Int,
+    ((0 <= k) && (k < upto)) →
+      (0L <= stops[k])) &&
+  (∀ k : Int,
+    ((0 <= k) && (k < upto)) →
+      (stops[k] <= 9007199254740991L))
+}
+
+///|
+/// The first length does not fit on its own.
+predicate first_does_not_fit(lengths : FixedArray[Int64]) {
+  (lengths[0] < 0L) || (9007199254740991L < lengths[0])
+}
+
+///|
+/// The next length does not fit after the last stop that was made.
+predicate next_does_not_fit(
+  lengths : FixedArray[Int64],
+  stops : FixedArray[Int64],
+  place : Int,
+) {
+  (lengths[place] < 0L) ||
+  (9007199254740991L < stops[place - 1] + lengths[place])
+}
+
+///|
+/// Where the row began, nothing fits.
+predicate stops_at_start(lengths : FixedArray[Int64], place : Int) {
+  (place == 0) → first_does_not_fit(lengths)
+}
+
+///|
+/// Past the start, nothing fits after the last stop.
+predicate stops_after_start(
+  lengths : FixedArray[Int64],
+  stops : FixedArray[Int64],
+  place : Int,
+) {
+  (0 < place) → next_does_not_fit(lengths, stops, place)
+}
+
+///|
+/// The row stopped at `place`.
+predicate stopped(
+  lengths : FixedArray[Int64],
+  stops : FixedArray[Int64],
+  place : Int,
+) {
+  stops_at_start(lengths, place) &&
+  stops_after_start(lengths, stops, place)
+}
+
+///|
+/// Nothing has been laid yet, so the row is at its first frame.
+predicate starts_from_zero(place : Int, cursor : Int64) {
+  (place == 0) → (cursor == 0L)
+}
+
+///|
+/// Where the cursor is while the row is whole: nowhere yet, or at the
+/// last stop made.
+predicate cursor_follows(stops : FixedArray[Int64], i : Int, cursor : Int64) {
+  (i == 0) || (cursor == stops[i - 1])
+}
+
+///|
+/// The row is whole so far, or the place it stopped has been passed.
+predicate stopped_place_is_behind(bad : Int, i : Int, n : Int) {
+  (bad == n) || (bad <= i)
+}
+
+///|
+/// The row has not stopped, or it stopped where it says.
+predicate not_stopped_or_stopped_at(
+  lengths : FixedArray[Int64],
+  stops : FixedArray[Int64],
+  bad : Int,
+  n : Int,
+) {
+  (bad == n) || stopped(lengths, stops, bad)
+}
+
+///|
+/// So long as the row is whole, each stop is its own length past the one
+/// before it.
+predicate whole_goes_end_to_end(
+  lengths : FixedArray[Int64],
+  stops : FixedArray[Int64],
+  i : Int,
+  bad : Int,
+  n : Int,
+) {
+  (bad == n) → end_to_end_upto(lengths, stops, i)
+}
+
+///|
+predicate whole_starts_with_own_length(
+  lengths : FixedArray[Int64],
+  stops : FixedArray[Int64],
+  i : Int,
+  bad : Int,
+  n : Int,
+) {
+  (bad == n) → starts_with_own_length(lengths, stops, i)
+}
+
+///|
+predicate whole_is_in_frames(stops : FixedArray[Int64], i : Int, bad : Int, n : Int) {
+  (bad == n) → frames_upto(stops, i)
+}
+
+///|
+predicate whole_cursor_follows(
+  stops : FixedArray[Int64],
+  i : Int,
+  cursor : Int64,
+  bad : Int,
+  n : Int,
+) {
+  (bad == n) → cursor_follows(stops, i, cursor)
+}
+
+///|
+predicate whole_starts_from_zero(i : Int, cursor : Int64, bad : Int, n : Int) {
+  (bad == n) → starts_from_zero(i, cursor)
+}
+
+///|
+/// Once the row has stopped, what was laid still lies end to end.
+predicate part_goes_end_to_end(
+  lengths : FixedArray[Int64],
+  stops : FixedArray[Int64],
+  bad : Int,
+  n : Int,
+) {
+  (bad < n) → end_to_end_upto(lengths, stops, bad)
+}
+
+///|
+predicate part_starts_with_own_length(
+  lengths : FixedArray[Int64],
+  stops : FixedArray[Int64],
+  bad : Int,
+  n : Int,
+) {
+  (bad < n) → starts_with_own_length(lengths, stops, bad)
+}
+
+///|
+predicate part_is_in_frames(stops : FixedArray[Int64], bad : Int, n : Int) {
+  (bad < n) → frames_upto(stops, bad)
+}
+
+///|
+/// A laid-out row: as long as the lengths, every stop a frame a document
+/// can name, laid end to end from the first frame as far as the row got,
+/// and either whole or stopped where the next length does not fit.
+predicate row_ok(lengths : FixedArray[Int64], row : Row) {
+  (row.stops.length() == lengths.length()) &&
+  within(row.upto, lengths.length()) &&
+  whole_goes_end_to_end(
+    lengths, row.stops, row.upto, row.upto, lengths.length()) &&
+  part_goes_end_to_end(lengths, row.stops, row.upto, lengths.length()) &&
+  whole_starts_with_own_length(
+    lengths, row.stops, row.upto, row.upto, lengths.length()) &&
+  part_starts_with_own_length(lengths, row.stops, row.upto, lengths.length()) &&
+  whole_is_in_frames(row.stops, row.upto, row.upto, lengths.length()) &&
+  part_is_in_frames(row.stops, row.upto, lengths.length()) &&
+  whole_or_stopped(lengths, row)
+}
+
+///|
+predicate whole_or_stopped(lengths : FixedArray[Int64], row : Row) {
+  (row.upto == lengths.length()) ||
+  stopped(lengths, row.stops, row.upto)
+}

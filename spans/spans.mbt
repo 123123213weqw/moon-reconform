@@ -117,3 +117,54 @@ pub fn summed(a : Int64, b : Int64) -> Int64? where {
     Some(a + b)
   }
 }
+
+///|
+/// A row of lengths laid out: where each one stops, and how many were laid
+/// before one did not fit.
+pub struct Row {
+  stops : FixedArray[Int64]
+  upto : Int
+}
+
+///|
+/// Where each of a row of lengths stops, laid end to end from the first
+/// frame. A length that does not fit after the last one laid stops the
+/// row there: the stops made are kept, and `upto` says how many.
+pub fn laid_out(lengths : FixedArray[Int64]) -> Row where {
+  proof_ensure: result => row_ok(lengths, result),
+} {
+  let stops = FixedArray::make(lengths.length(), 0L)
+  let n = lengths.length()
+  for i = 0, cursor = 0L, bad = n; i < n; {
+    // Past the place the row stopped, nothing more is laid.
+    if bad < n {
+      continue i + 1, cursor, bad
+    }
+    match summed(cursor, lengths[i]) {
+      Some(stop) => {
+        stops[i] = stop
+        continue i + 1, stop, bad
+      }
+      None => continue i + 1, cursor, i
+    }
+  } nobreak {
+    { stops, upto: bad }
+  } where {
+    proof_invariant: 0 <= i,
+    proof_invariant: i <= n,
+    proof_invariant: 0L <= cursor,
+    proof_invariant: cursor <= 9007199254740991L,
+    proof_invariant: within(bad, n),
+    proof_invariant: stopped_place_is_behind(bad, i, n),
+    proof_invariant: not_stopped_or_stopped_at(lengths, stops, bad, n),
+    proof_invariant: whole_goes_end_to_end(lengths, stops, i, bad, n),
+    proof_invariant: whole_starts_with_own_length(lengths, stops, i, bad, n),
+    proof_invariant: whole_is_in_frames(stops, i, bad, n),
+    proof_invariant: whole_cursor_follows(stops, i, cursor, bad, n),
+    proof_invariant: whole_starts_from_zero(i, cursor, bad, n),
+    proof_invariant: part_goes_end_to_end(lengths, stops, bad, n),
+    proof_invariant: part_starts_with_own_length(lengths, stops, bad, n),
+    proof_invariant: part_is_in_frames(stops, bad, n),
+    proof_invariant: stops.length() == n,
+  }
+}

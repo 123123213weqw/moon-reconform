@@ -11,8 +11,9 @@ priv struct LocatedShot {
 ///|
 pub struct Timeline {
   priv shots : Array[LocatedShot]
-  /// Where each shot stops on the track. Every shot holds at least one
-  /// frame, so these only rise, which is what the search is made over.
+  /// Where each shot stops on the track, as the proved kernel laid them
+  /// out end to end. Every shot holds at least one frame, so these only
+  /// rise, which is what the search is made over.
   priv stops : FixedArray[Int64]
   priv length_frames : Int64
 }
@@ -24,9 +25,10 @@ pub fn Timeline::from_shots(
   if shots.length() > 20000 {
     raise Limit("too many shots; limit is 20000")
   }
-  let located = []
+  let lengths : Array[Int64] = []
+  let parts : Array[(String?, Span?, Unplaceable?)] = []
   let mut cursor = 0L
-  for i, shot in shots {
+  for shot in shots {
     let (media, source, why, length) = match shot {
       Clip(id, source) => {
         if id.length() == 0 {
@@ -50,15 +52,32 @@ pub fn Timeline::from_shots(
         (None, None, Some(reason), n)
       }
     }
-    let stop = add_frames(cursor, length)
-    located.push({ clip: i, timeline: { start: cursor, stop, }, media, source, why, })
-    cursor = stop
+    // Added here, shot by shot, so that a cut that runs past the last
+    // frame is refused where it runs past it.
+    cursor = add_frames(cursor, length)
+    lengths.push(length)
+    parts.push((media, source, why))
   }
-  {
-    shots: located,
-    stops: FixedArray::makei(located.length(), i => located[i].timeline.stop),
-    length_frames: cursor,
+  // Where each shot stops, laid end to end by the proved kernel. The row
+  // is whole: every length was added above, with the same sum.
+  let row = @spans.laid_out(FixedArray::makei(lengths.length(), i => lengths[i]))
+  if row.upto < lengths.length() {
+    raise Limit("timeline exceeds exact frame range")
   }
+  let located : Array[LocatedShot] = Array::makei(
+    lengths.length(),
+    i => {
+      clip: i,
+      timeline: {
+        start: if i == 0 { 0L } else { row.stops[i - 1] },
+        stop: row.stops[i],
+      },
+      media: parts[i].0,
+      source: parts[i].1,
+      why: parts[i].2,
+    },
+  )
+  { shots: located, stops: row.stops, length_frames: cursor }
 }
 
 ///|

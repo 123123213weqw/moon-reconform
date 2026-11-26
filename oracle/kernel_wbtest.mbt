@@ -222,6 +222,68 @@ test "the intersection is where two ranges share frames" {
 }
 
 ///|
+/// The stops of a row of lengths by adding them up one at a time.
+fn added_up(values : FixedArray[Int64]) -> Array[Int64] {
+  let out = []
+  let mut running = 0L
+  for i = 0; i < values.length(); i = i + 1 {
+    running = running + values[i]
+    out.push(running)
+  }
+  out
+}
+
+///|
+test "a row of lengths is laid out as adding them up says" {
+  @quickcheck.check(
+    (draw : Draw) => {
+      // Lengths from 0 to 5, so that every row fits: the whole row is
+      // laid, and each stop is the running total.
+      let values = FixedArray::makei(
+        draw.values.length(),
+        i => (draw.values[i] & 7).to_int64(),
+      )
+      let row = @spans.laid_out(values)
+      let wanted = added_up(values)
+      if row.upto != values.length() {
+        fail("the row stopped at " + row.upto.to_string() + " of a row that fits")
+      }
+      for i = 0; i < values.length(); i = i + 1 {
+        if row.stops[i] != wanted[i] {
+          fail(
+            "stop " +
+            i.to_string() +
+            " is " +
+            row.stops[i].to_string() +
+            " and adding up gives " +
+            wanted[i].to_string() +
+            " for " +
+            shown_values(values),
+          )
+        }
+      }
+      true
+    },
+    count=2000,
+    max_size=8,
+    seed=3628,
+    counterexample_context=draw => {
+      let values = FixedArray::makei(
+        draw.values.length(),
+        i => (draw.values[i] & 7).to_int64(),
+      )
+      shown_values(values)
+    },
+  )
+  // Near the last frame the row stops where adding up would run past it.
+  let edge = [far_away, 255L, 1L]
+  let row = @spans.laid_out(FixedArray::makei(3, i => edge[i]))
+  assert_eq(row.upto, 2)
+  assert_eq(row.stops[0], far_away)
+  assert_eq(row.stops[1], 9007199254740991L)
+}
+
+///|
 test "a sum is named exactly while it can be" {
   let edges = [
     (0L, 0L),

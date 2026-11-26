@@ -8,6 +8,8 @@ pub fn first_high(FixedArray[Int64], Int64, Int64) -> Int32
 
 pub fn intersection(Int64, Int64, Int64, Int64) -> (Int64, Int64)?
 
+pub fn laid_out(FixedArray[Int64]) -> Row
+
 pub let last : Int64
 
 pub fn running_max(FixedArray[Int64], Int64) -> FixedArray[Int64]
@@ -17,6 +19,10 @@ pub fn summed(Int64, Int64) -> Int64?
 // Errors
 
 // Types and methods
+pub struct Row {
+  stops : FixedArray[Int64]
+  upto : Int32
+}
 
 // Type aliases
 
