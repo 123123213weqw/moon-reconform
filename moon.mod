@@ -1,6 +1,6 @@
 name = "123123213weqw/moon_reconform"
 
-version = "0.6.0"
+version = "0.7.0"
 
 license = "Apache-2.0"
 
