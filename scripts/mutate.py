@@ -43,6 +43,7 @@ class Fault(namedtuple("Fault", "name edits")):
 PLAN, INDEX, TIMELINE = "plan.mbt", "index.mbt", "timeline.mbt"
 RESOLVE, REQUEST, EXPORT, MARKERS = "resolve.mbt", "request.mbt", "export.mbt", "markers.mbt"
 OTIO, MAIN, MODEL = "otio.mbt", "cmd/main/main.mbt", "model.mbt"
+RATE = "rate.mbt"
 
 FAULTS = [
     # The plan: pieces, candidates, budgets.
@@ -71,8 +72,11 @@ FAULTS = [
     Fault("anything is kept where a marker should be",
           Edit(OTIO, "        guard marker is Object(_) else {",
                "        guard marker is Object(_) || marker is Number(_) else {")),
-    Fault("a frame rate that is not a whole number is called a bad integer",
-          Edit(OTIO, "if n > 0.0 && n < 1000000.0 && n != n.floor() =>", "if n < 0.0 =>")),
+    Fault("a cut at another rate is read as the request's",
+          Edit(RATE, "if n != rate.value {", "if false {")),
+    Fault("a rate that is not a whole number is refused",
+          Edit(RATE, "if !(n > 0.0 && n <= 1000000.0) {",
+               "if !(n > 0.0 && n <= 1000000.0 && n == n.floor()) {")),
     Fault("a transition is taken to last its entering offset only",
           Edit(OTIO, "let length = add_frames(entering, leaving)", "let length = entering")),
     Fault("a transition of no length is read",
@@ -94,7 +98,8 @@ FAULTS = [
     Fault("a shot with one frame inside is not a candidate",
           Edit(INDEX, "    if span.stop > target.start {", "    if span.stop - 1 > target.start {")),
     Fault("a one-frame overlap is not an overlap",
-          Edit(TIMELINE, "  if start < stop {\n", "  if start + 1 < stop {\n")),
+          Edit(TIMELINE, "    Some((start, stop)) => Some({ start, stop, })",
+               "    Some((start, stop)) => Some({ start, stop: stop - 1L, })")),
     Fault("the shot limit is one past",
           Edit(OTIO, "if children.length() > 20000 {", "if children.length() > 20001 {"),
           Edit(TIMELINE, "if shots.length() > 20000 {", "if shots.length() > 20001 {")),

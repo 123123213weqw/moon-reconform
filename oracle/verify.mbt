@@ -139,7 +139,7 @@ fn examine(
   cursor : Int,
   choose : Bool,
   walked~ : Bool,
-  fps~ : Int32 = 24,
+  fps~ : @tool.Rate = @tool.Rate::whole(24),
   picked~ : Array[@tool.Selection] = [],
 ) -> Outcome raise {
   let before = @tool.read_otio(old, track_index=old_track, fps~)
@@ -229,7 +229,7 @@ fn examine(
     fps~,
     resolution,
   )
-  let document = exported(fresh, new_track, settled, fresh_slots)
+  let document = exported(fresh, new_track, settled, fresh_slots, rate=fps)
   if written != document {
     fail(
       "the export is not the document the oracle builds:\n" +
@@ -281,7 +281,8 @@ fn count_of(outcome : Outcome) -> Tally {
 /// carries what was held, plans against that third cut, and exports again.
 pub fn verify(case : Case) -> Tally raise {
   let (old, old_track, fresh, new_track, third, third_track, asked) = build(case)
-  let notes = @tool.read_request(asked).notes
+  let first_request = @tool.read_request(asked)
+  let notes = first_request.notes
   let one = examine(
     old,
     fresh,
@@ -292,6 +293,7 @@ pub fn verify(case : Case) -> Tally raise {
     0,
     (case.switches & 2) == 0,
     walked=lead_of(case) == 0L,
+    fps=first_request.fps,
   )
   let first = count_of(one)
   let tally = Tally::{
@@ -312,7 +314,7 @@ pub fn verify(case : Case) -> Tally raise {
   if one.markers > 0 {
     let stale = markers_on(track_of_document(one.written, new_track)).copy()
     if (case.switches & 1) == 1 {
-      stale.push(own_marker("The editor's own", 1L, 1L))
+      stale.push(own_marker("The editor's own", 1L, 1L, rate=rate_of(case)))
     }
     let next = with_markers_on(third, third_track, stale)
     let carried = one.carry.map(note => {
@@ -329,12 +331,13 @@ pub fn verify(case : Case) -> Tally raise {
       carried,
       [],
       true,
+      rate=rate_of(case),
     )
     let again = @tool.read_request(asked_again).notes.copy()
     let read = @tool.read_notes_from_markers(
       one.written,
       track_index=new_track,
-      fps=24,
+      fps=rate_of(case),
     )
     let wanted = read_back(one.written, new_track)
     if read != wanted {
@@ -358,6 +361,7 @@ pub fn verify(case : Case) -> Tally raise {
       one.cursor,
       (case.switches & 4) == 0,
       walked=lead_of(case) == 0L,
+      fps=rate_of(case),
     )
     let more = count_of(two)
     tally.add(
@@ -437,7 +441,11 @@ pub fn self_mapped(
 ) -> Unit raise {
   let (document, selected) = document_of(cut, far~)
   let laid = slots(document, selected)
-  let timeline = @tool.read_otio(document, track_index=selected, fps=24)
+  let timeline = @tool.read_otio(
+    document,
+    track_index=selected,
+    fps=@tool.Rate::whole(24),
+  )
   let built = build({ cuts: [cut, cut, cut], marks, picks: [], switches: 0 })
   let notes = @tool.read_request(built.6).notes
   let reports = @tool.plan(timeline, timeline, notes)

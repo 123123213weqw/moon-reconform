@@ -9,16 +9,16 @@ fn j_empty() -> Json {
 }
 
 ///|
-fn j_rt(value : Int64, rate : Int32) -> Json {
+fn j_rt(value : Int64, rate : Rate) -> Json {
   j_obj({
     "OTIO_SCHEMA": Json("RationalTime.1"),
     "value": Json::number(value.to_double(), repr=value.to_string()),
-    "rate": Json::number(rate.to_double()),
+    "rate": Json::number(rate.value, repr=rate.token),
   })
 }
 
 ///|
-fn j_range(start : Int64, duration : Int64, rate : Int32) -> Json {
+fn j_range(start : Int64, duration : Int64, rate : Rate) -> Json {
   j_obj({
     "OTIO_SCHEMA": Json("TimeRange.1"),
     "start_time": j_rt(start, rate),
@@ -27,7 +27,7 @@ fn j_range(start : Int64, duration : Int64, rate : Int32) -> Json {
 }
 
 ///|
-fn j_clip(url : String, start : Int64, duration : Int64, rate : Int32) -> Json {
+fn j_clip(url : String, start : Int64, duration : Int64, rate : Rate) -> Json {
   j_obj({
     "OTIO_SCHEMA": Json("Clip.1"),
     "name": Json(url),
@@ -47,7 +47,7 @@ fn j_clip(url : String, start : Int64, duration : Int64, rate : Int32) -> Json {
 }
 
 ///|
-fn j_gap(duration : Int64, rate : Int32) -> Json {
+fn j_gap(duration : Int64, rate : Rate) -> Json {
   j_obj({
     "OTIO_SCHEMA": Json("Gap.1"),
     "name": Json(""),
@@ -64,7 +64,7 @@ fn j_marker(
   name : String,
   start : Int64,
   duration : Int64,
-  rate : Int32,
+  rate : Rate,
 ) -> Json {
   j_obj({
     "OTIO_SCHEMA": Json("Marker.2"),
@@ -170,7 +170,7 @@ fn j_span(start : Int64, stop : Int64) -> Json {
 
 ///|
 test "exported markers read back by footage and supersede their copies" {
-  let rate = 24
+  let rate = Rate::whole(24)
   let url = "file:///shoot/A.mov"
   let note : Note = {
     id: "n1",
@@ -326,7 +326,7 @@ test "exported markers read back by footage and supersede their copies" {
 
 ///|
 test "only markers with an origin are read, and a malformed one is refused" {
-  let rate = 24
+  let rate = Rate::whole(24)
   let url = "file:///shoot/A.mov"
   fn cut_with(markers : Array[Json]) -> Json {
     j_timeline(j_track([j_clip(url, 0L, 8L, rate)], markers))

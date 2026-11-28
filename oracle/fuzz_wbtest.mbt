@@ -82,7 +82,7 @@ test "a document that is changed as a fuzzer changes one is refused in so many w
 fn offered(
   document : Json,
   index : Int,
-  fps : Int,
+  fps : @tool.Rate,
   steps : Array[Int],
   read : Array[Int],
   refusals : Array[Int],
@@ -130,10 +130,12 @@ test "a document that is anything at all is read or refused in so many words, ne
       let state = @splitmix.RandomState::RandomState(seed=seeded.number())
       let anything_at_all = anything(4, state)
       let index = one_of([-1L, 0L, 1L, 2L], state).to_int()
-      let fps = one_of([0L, 1L, 24L, 240L, 241L], state).to_int()
+      let fps = @tool.Rate::whole(
+        one_of([0L, 1L, 24L, 240L, 241L], state).to_int(),
+      )
       offered(anything_at_all, index, fps, [0, 1, 2, 3], read, refusals)
-      offered(grafted(seeded.number()), 0, 24, [0, 2, 3], kept, kept_refusals)
-      offered(grafted(seeded.number(), asked=true), 0, 24, [1], kept, kept_refusals)
+      offered(grafted(seeded.number()), 0, @tool.Rate::whole(24), [0, 2, 3], kept, kept_refusals)
+      offered(grafted(seeded.number(), asked=true), 0, @tool.Rate::whole(24), [1], kept, kept_refusals)
       true
     },
     count=3000,
@@ -167,5 +169,25 @@ test "a document that is anything at all is read or refused in so many words, ne
   for step in [0, 1, 2, 3] {
     assert_true(kept[step] >= least[step])
     assert_true(kept_refusals[step] >= 300)
+  }
+}
+
+///|
+/// A clip can be longer than 32 bits, and the mutator has to take it as any
+/// other: the split cuts it somewhere and does not try to draw from an
+/// empty range when its length, cut down to an `Int`, comes out as one.
+test "a clip longer than 32 bits is still changed without a crash" {
+  let long = 4294967297L
+  let document = sequence(
+    plain_track([footage_clip("file:///shoot/X.mov", 0L, long)]),
+    None,
+  )
+  let state = @splitmix.RandomState::RandomState(seed=7)
+  for trial = 0; trial < 200; trial = trial + 1 {
+    let copy = copied(document)
+    for step = 0; step < 5; step = step + 1 {
+      retime(copy, state)
+    }
+    ignore(copy)
   }
 }

@@ -100,9 +100,13 @@ fn annotations(count : Int, at : Int64) -> Array[Json] {
 
 ///|
 /// The request that goes with them.
-fn asked_for(notes : Array[Json], selections : Array[Json]) -> Json {
+fn asked_for(
+  notes : Array[Json],
+  selections : Array[Json],
+  rate~ : @tool.Rate = @tool.Rate::whole(24),
+) -> Json {
   Json::object({
-    "fps": Json(24),
+    "fps": Json::number(rate.value, repr=rate.token),
     "old_track": Json(0),
     "new_track": Json(0),
     "notes": Json::array(notes),
@@ -134,7 +138,7 @@ fn one_cut() -> (Json, @tool.Timeline) raise {
     plain_track([footage_clip("file:///shoot/X.mov", 0L, 4L)]),
     None,
   )
-  let cut = @tool.read_otio(document, track_index=0, fps=24)
+  let cut = @tool.read_otio(document, track_index=0, fps=@tool.Rate::whole(24))
   (document, cut)
 }
 
@@ -155,8 +159,8 @@ test "the search budget is met at 999 annotations and stepped past at 1000" {
   }
   let flat = sequence(plain_track([footage_clip(x, 0L, 2000L)]), None)
   let scanned = sequence(plain_track(crowded), None)
-  let before = @tool.read_otio(flat, track_index=0, fps=24)
-  let after = @tool.read_otio(scanned, track_index=0, fps=24)
+  let before = @tool.read_otio(flat, track_index=0, fps=@tool.Rate::whole(24))
+  let after = @tool.read_otio(scanned, track_index=0, fps=@tool.Rate::whole(24))
   let met = notes_of(asked_for(annotations(999, 1000L), []))
   let reports = @tool.plan(before, after, met)
   assert_eq(reports.length(), 999)
@@ -185,8 +189,8 @@ test "the report budget is met at 49 annotations and stepped past at 50" {
   }
   let lone = sequence(plain_track([footage_clip(x, 0L, 100L)]), None)
   let repeated = sequence(plain_track(crowded), None)
-  let before = @tool.read_otio(lone, track_index=0, fps=24)
-  let after = @tool.read_otio(repeated, track_index=0, fps=24)
+  let before = @tool.read_otio(lone, track_index=0, fps=@tool.Rate::whole(24))
+  let after = @tool.read_otio(repeated, track_index=0, fps=@tool.Rate::whole(24))
   // A piece with two thousand places costs two thousand and one.
   let met = notes_of(asked_for(annotations(49, 0L), []))
   let reports = @tool.plan(before, after, met)
@@ -212,7 +216,7 @@ test "a black piece costs the report budget one" {
     children.push(black(1L))
   }
   let dark = sequence(plain_track(children), None)
-  let cut = @tool.read_otio(dark, track_index=0, fps=24)
+  let cut = @tool.read_otio(dark, track_index=0, fps=@tool.Rate::whole(24))
   // An annotation across the whole track is twenty thousand pieces, and
   // costs twenty thousand: five fit the budget exactly and six do not.
   let whole = []
@@ -293,7 +297,7 @@ test "the counts are met exactly and stepped past" {
   let edges = @tool.read_otio(
     sequence(plain_track(children), None),
     track_index=0,
-    fps=24,
+    fps=@tool.Rate::whole(24),
   )
   assert_eq(edges.duration(), 20000L)
   let held = @tool.plan(
@@ -309,14 +313,14 @@ test "the counts are met exactly and stepped past" {
   let too_many = sequence(plain_track(plus_one), None)
   says(
     "too many shots; limit is 20000",
-    () => ignore(@tool.read_otio(too_many, track_index=0, fps=24)),
+    () => ignore(@tool.read_otio(too_many, track_index=0, fps=@tool.Rate::whole(24))),
   )
   // A clip counts as much as black.
   plus_one[0] = footage_clip(x, 0L, 1L)
   let with_clip = sequence(plain_track(plus_one), None)
   says(
     "too many shots; limit is 20000",
-    () => ignore(@tool.read_otio(with_clip, track_index=0, fps=24)),
+    () => ignore(@tool.read_otio(with_clip, track_index=0, fps=@tool.Rate::whole(24))),
   )
   // A timeline built from shots keeps the same count.
   let shots = []
@@ -337,60 +341,122 @@ test "the counts are met exactly and stepped past" {
 }
 
 ///|
-/// Footage at 29.97 is the commonest reason to be refused, and it is told
-/// apart from a number that is simply malformed. The frame rate is a whole
-/// number from 1 to 240, the document has to agree with it, and a track
-/// index is one that exists.
-test "a rate that is not a whole number is not called a bad number" {
+/// A frame rate may be other than a whole number, as 23.976 and 29.97 are,
+/// as long as both cuts and the request are at it. Nothing converts between
+/// rates, so frame numbers stay exact whatever the rate is. A cut at
+/// another rate is refused by name, and a rate that is not a positive
+/// number at all is a bad rate rather than a bad integer.
+test "a rate other than a whole number is read, and another rate is refused" {
   let (document, _) = one_cut()
-  for rate in ["29.97002997002997", "23.976", "59.94", "0.5"] {
-    let cut = rerated(document, rate)
-    ends_with(
-      "the frame rate " +
-      rate +
-      " is not a whole number of frames per second. Cuts at rates such as 23.976 and 29.97 are not supported.",
-      () => ignore(@tool.read_otio(cut, track_index=0, fps=24)),
+  for written in ["29.97", "23.976", "59.94", "29.97002997002997"] {
+    let rate : @tool.Rate = {
+      value: @string.parse_double(written),
+      token: written,
+    }
+    let cut = rerated(document, written)
+    let asked = asked_for([annotation(0, 0L)], [], rate~)
+    assert_eq(@tool.read_request(asked).fps, rate)
+    let at_rate = @tool.read_otio(cut, track_index=0, fps=rate)
+    let reports = @tool.plan(
+      at_rate,
+      at_rate,
+      notes_of(asked),
     )
-  }
-  // A number that is not a rate at all is a bad number, and so is a
-  // fraction only once it is past the window in which a rate could be
-  // mistaken for one. A negative rate is a bad number too, not a rate
-  // with a fraction.
-  for rate in ["-24", "1000000.5", "-0.5"] {
-    let cut = rerated(document, rate)
-    ends_with(
-      ".rate: expected a nonnegative exact integer",
-      () => ignore(@tool.read_otio(cut, track_index=0, fps=24)),
-    )
-  }
-  for fps in [0, 241] {
-    ends_with(
-      "fps must be between 1 and 240",
-      () => ignore(@tool.read_otio(document, track_index=0, fps=fps)),
-    )
-  }
-  for fps in [1, 240] {
-    let own = rerated(document, fps.to_string())
-    let at_rate = @tool.read_otio(own, track_index=0, fps=fps)
-    let noted = notes_of(
-      Json::object({
-        "fps": Json(fps),
-        "old_track": Json(0),
-        "new_track": Json(0),
-        "notes": Json::array([annotation(0, 0L)]),
-        "selections": Json::array([]),
-        "from_markers": Json(false),
-      }),
-    )
-    let report = @tool.plan(at_rate, at_rate, noted)
     assert_eq(
-      @tool.resolve(report, []).transfers.map(t => t.placement),
+      @tool.resolve(reports, []).transfers.map(t => t.placement),
       [@tool.Placement::{ clip: 0, range: { start: 0L, stop: 1L } }],
     )
+    // The markers the tool writes are at the same rate, and read back at it.
+    let written_cut = @tool.with_markers(
+      cut,
+      track_index=0,
+      fps=rate,
+      @tool.resolve(reports, []),
+    )
+    assert_eq(markers_on(track_of_document(written_cut, 0)).length(), 1)
+    assert_eq(
+      @tool.read_notes_from_markers(written_cut, track_index=0, fps=rate).length(),
+      1,
+    )
   }
+  // The same number written another way is the same rate; a different
+  // number is a different rate, however close.
+  let own = rerated(document, "24")
+  let as_decimal = @tool.read_otio(
+    own,
+    track_index=0,
+    fps=@tool.Rate::{ value: 24.0, token: "24.0" },
+  )
+  assert_eq(as_decimal.duration(), 4L)
   mentions(
     "RationalTime rate 24 differs from the request's 25 fps.",
-    () => ignore(@tool.read_otio(document, track_index=0, fps=25)),
+    () => ignore(@tool.read_otio(own, track_index=0, fps=@tool.Rate::whole(25))),
+  )
+  let near = rerated(document, "29.97002997002997")
+  mentions(
+    "RationalTime rate 29.97002997002997 differs from the request's 29.97 fps",
+    () => ignore(@tool.read_otio(near, track_index=0, fps=@tool.Rate::{ value: 29.97, token: "29.97" })),
+  )
+  // A rate that is not a positive number is a bad rate.
+  for written in ["-24", "0", "1000001"] {
+    ends_with(
+      ".rate: expected a positive frame rate",
+      () => ignore(
+        @tool.read_otio(
+          rerated(document, written),
+          track_index=0,
+          fps=@tool.Rate::whole(24),
+        ),
+      ),
+    )
+  }
+  // Something that is not a number at all is not a rate.
+  let not_a_number = rerated(document, "24")
+  let fields = match not_a_number {
+    Object(outer) => outer
+    _ => fail("the document is not an object")
+  }
+  fields["name"] = Json(not_a_number)
+  ignore(not_a_number)
+  // The request's rate is a number from 1 to 240, whole or not.
+  for fps in [0, 241] {
+    says(
+      "fps must be between 1 and 240",
+      () => ignore(
+        @tool.read_request(
+          Json::object({
+            "fps": Json(fps),
+            "old_track": Json(0),
+            "new_track": Json(0),
+            "notes": Json::array([]),
+            "selections": Json::array([]),
+            "from_markers": Json(false),
+          }),
+        ),
+      ),
+    )
+  }
+  ends_with(
+    "fps must be between 1 and 240",
+    () => ignore(@tool.read_request(asked_for([], [], rate=@tool.Rate::{ value: 0.5, token: "0.5" }))),
+  )
+  // A frame count is still an exact integer, at any rate.
+  ends_with(
+    "a0.start: expected a nonnegative exact integer",
+    () => ignore(
+      notes_of(
+        asked_for(
+          [
+            Json::object({
+              "id": Json("a0"),
+              "text": Json("审阅"),
+              "start": Json::number(1.5),
+            }),
+          ],
+          [],
+        ),
+      ),
+    ),
   )
   says(
     "request.old_track: exceeds index range",
@@ -410,7 +476,7 @@ test "a rate that is not a whole number is not called a bad number" {
   )
   says(
     "track index is outside the stack",
-    () => ignore(@tool.read_otio(document, track_index=3, fps=24)),
+    () => ignore(@tool.read_otio(document, track_index=3, fps=@tool.Rate::whole(24))),
   )
 }
 
@@ -429,13 +495,13 @@ test "an annotation is not exported twice onto one track" {
   let written = @tool.with_markers(
     document,
     track_index=0,
-    fps=24,
+    fps=@tool.Rate::whole(24),
     resolution,
   )
   assert_eq(markers_on(track_of_document(written, 0)).length(), 1)
   says(
     "an exported marker already exists for a0",
-    () => ignore(@tool.with_markers(written, track_index=0, fps=24, resolution)),
+    () => ignore(@tool.with_markers(written, track_index=0, fps=@tool.Rate::whole(24), resolution)),
   )
 }
 
@@ -453,10 +519,10 @@ test "a track that lists no markers is left as it came when nothing transfers" {
   // The footage is gone from the new cut, so the annotation is held.
   let gone = sequence(plain_track([black(4L)]), None)
   let empty = sequence(plain_track([black(4L)]), None)
-  let reports = @tool.plan(cut, @tool.read_otio(gone, track_index=0, fps=24), notes_of(asked_for([annotation(0, 0L)], [])))
+  let reports = @tool.plan(cut, @tool.read_otio(gone, track_index=0, fps=@tool.Rate::whole(24)), notes_of(asked_for([annotation(0, 0L)], [])))
   let resolution = @tool.resolve(reports, [])
   assert_eq(resolution.transfers.length(), 0)
-  let written = @tool.with_markers(gone, track_index=0, fps=24, resolution)
+  let written = @tool.with_markers(gone, track_index=0, fps=@tool.Rate::whole(24), resolution)
   if written != gone {
     fail("nothing transfers and the cut is not handed back as it came")
   }
@@ -467,7 +533,7 @@ test "a track that lists no markers is left as it came when nothing transfers" {
   // Where something transfers onto a track that lists no markers, the
   // list is made.
   let kept = @tool.plan(cut, cut, notes_of(asked_for([annotation(0, 0L)], [])))
-  let made = @tool.with_markers(bare, track_index=0, fps=24, @tool.resolve(kept, []))
+  let made = @tool.with_markers(bare, track_index=0, fps=@tool.Rate::whole(24), @tool.resolve(kept, []))
   assert_eq(markers_on(track_of_document(made, 0)).length(), 1)
   assert_eq(exported(bare, 0, @tool.resolve(kept, []), slots(bare, 0)), made)
 }

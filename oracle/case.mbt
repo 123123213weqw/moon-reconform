@@ -26,8 +26,8 @@ pub(all) struct Mark {
 /// order, and, in the bits of `switches`: an editor's own marker on the
 /// third cut, no choices in the first round, no choices in the second, text
 /// with quotes, a newline and a tab in it, footage lying near the last
-/// frame a document can write, and tracks that begin with black far past
-/// what a 32-bit cut could hold.
+/// frame a document can write, tracks that begin with black far past what
+/// a 32-bit cut could hold, and a review at 29.97 rather than at 24.
 #derive(Eq, Debug)
 pub(all) struct Case {
   cuts : Array[Cut]
@@ -245,7 +245,7 @@ impl @quickcheck.Arbitrary for Case with fn arbitrary(size, r0) {
     cuts: [old, fresh, third],
     marks,
     picks,
-    switches: draw(128, r0),
+    switches: draw(256, r0),
   }
 }
 
@@ -289,19 +289,24 @@ fn cut_at(case : Case, index : Int32) -> Cut {
 
 ///|
 /// The document for a cut, and the track in it that a request selects.
-fn document_of(cut : Cut, far~ : Int64 = 0L, lead~ : Int64 = 0L) -> (
-  Json,
-  Int32,
-) {
+fn document_of(
+  cut : Cut,
+  far~ : Int64 = 0L,
+  lead~ : Int64 = 0L,
+  rate~ : @tool.Rate = @tool.Rate::whole(24),
+) -> (Json, Int32) {
   let two = (cut.layer & 1) == 1
   let sound = (cut.layer & 4) == 4
   let selected = if two && (cut.layer & 2) == 2 { 1 } else { 0 }
   let other = if two {
-    Some(track_of(cut.second, !sound, [], far~, lead~))
+    Some(track_of(cut.second, !sound, [], far~, lead~, rate~))
   } else {
     None
   }
-  (sequence(track_of(cut.first, sound, [], far~, lead~), other), selected)
+  (
+    sequence(track_of(cut.first, sound, [], far~, lead~, rate~), other, rate~),
+    selected,
+  )
 }
 
 ///|
@@ -321,9 +326,10 @@ fn request(
   notes : Array[Json],
   selections : Array[Json],
   from_markers : Bool,
+  rate~ : @tool.Rate = @tool.Rate::whole(24),
 ) -> Json {
   Json::object({
-    "fps": Json(24),
+    "fps": Json::number(rate.value, repr=rate.token),
     "old_track": Json(old_track),
     "new_track": Json(new_track),
     "notes": Json::array(notes),
@@ -358,12 +364,24 @@ fn lead_of(case : Case) -> Int64 {
   if (case.switches & 64) == 64 { long_lead } else { 0L }
 }
 
+///|
+/// The frame rate this review is at: whole 24, or 29.97 where the review's
+/// switch for it is set.
+pub fn rate_of(case : Case) -> @tool.Rate {
+  if (case.switches & 128) == 128 {
+    { value: 29.97, token: "29.97" }
+  } else {
+    @tool.Rate::whole(24)
+  }
+}
+
 fn build(case : Case) -> (Json, Int32, Json, Int32, Json, Int32, Json) {
   let far = offset_of(case)
   let lead = lead_of(case)
-  let (old, old_track) = document_of(cut_at(case, 0), far~, lead~)
-  let (fresh, new_track) = document_of(cut_at(case, 1), far~, lead~)
-  let (third, third_track) = document_of(cut_at(case, 2), far~, lead~)
+  let rate = rate_of(case)
+  let (old, old_track) = document_of(cut_at(case, 0), far~, lead~, rate~)
+  let (fresh, new_track) = document_of(cut_at(case, 1), far~, lead~, rate~)
+  let (third, third_track) = document_of(cut_at(case, 2), far~, lead~, rate~)
   let old_length = duration_of(slots(old, old_track))
   let notes = []
   for i, mark in case.marks {
@@ -402,9 +420,15 @@ fn build(case : Case) -> (Json, Int32, Json, Int32, Json, Int32, Json) {
       )
     }
   }
-  (old, old_track, fresh, new_track, third, third_track, request(
-    old_track, new_track, notes, [], false,
-  ))
+  (
+    old,
+    old_track,
+    fresh,
+    new_track,
+    third,
+    third_track,
+    request(old_track, new_track, notes, [], false, rate~),
+  )
 }
 
 ///|

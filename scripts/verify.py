@@ -1203,16 +1203,58 @@ def verify_corners(directory, otio):
         proc.returncode, proc.stderr[:300], proc.stdout[:40])
     checked.append("a closed pipe")
 
-    # Footage at 29.97 is the commonest reason to be refused. It is told
-    # apart from a number that is simply malformed.
+    # A rate may be other than a whole number, as 23.976 and 29.97 are, as
+    # long as both cuts and the request are at it. Nothing converts between
+    # rates, so frames stay exact; the markers the tool writes say the rate
+    # the request did, and the tool reads them back at it.
     cut_text = json.dumps(one)
-    for rate in ("29.97002997002997", "23.976", "59.94", "0.5"):
+    for rate in ("29.97002997002997", "23.976", "59.94", "29.97"):
+        rated = timeline([clip(a, 0, 4, float(rate))])
+        paths = files(directory, rated, rated,
+                      request(0, 0, [("n", 0, None)], fps=float(rate)))
+        found = invoke("plan", paths)
+        assert found["ok"] and len(found["transfers"]) == 1, (rate, found)
+        assert found["transfers"][0]["placement"] == dict(
+            clip=0, range=dict(start=0, stop=1)), (rate, found)
+        output = directory / f"rated-{rate}.otio"
+        output.unlink(missing_ok=True)
+        invoke("apply", [*paths, output])
+        written = json.loads(output.read_text(encoding="utf-8"))
+        marker = written["tracks"]["children"][0]["markers"][0]
+        assert marker["marked_range"]["start_time"]["rate"] == float(rate), (rate, marker)
+        # Read back from that export at the same rate.
+        again = [directory / "rated-old.otio", directory / "rated-new.otio",
+                 directory / "rated.json"]
+        exported = output.read_text(encoding="utf-8")
+        for path in again[:2]:
+            path.write_text(exported, encoding="utf-8")
+        write(again[2], request(0, 0, [], fps=float(rate), from_markers=True))
+        reread = invoke("plan", again)
+        assert reread["ok"] and [n["id"] for n in reread["notes"]] == ["n#0"], (rate, reread)
+        assert reread["transfers"][0]["note_id"] == "n#0", (rate, reread)
+    # Two numbers that are close are still two rates, and a cut at another
+    # rate is refused by name.
+    near = cut_text.replace('"rate": 24', '"rate": 29.97002997002997')
+    paths = files(directory, one, one, request(0, 0, [("n", 0, None)], fps=29.97))
+    for path in paths[:2]:
+        path.write_text(near)
+    invoke("plan", paths,
+           "RationalTime rate 29.97002997002997 differs from the request's 29.97 fps")
+    invoke("plan", files(directory, one, one, request(0, 0, [("n", 0, None)], fps=25)),
+           "RationalTime rate 24 differs from the request's 25 fps")
+    # A rate that is not a positive number is a bad rate, not a bad integer.
+    for rate in ("-24", "0", "1000001"):
         paths = files(directory, one, one, single)
         paths[1].write_text(cut_text.replace('"rate": 24', f'"rate": {rate}'))
-        error = invoke("plan", paths, f"the frame rate {rate} is not a whole number of frames per second")
-        assert "23.976 and 29.97 are not supported" in error["error"], error
-    paths = files(directory, one, one, single)
-    paths[1].write_text(cut_text.replace('"rate": 24', '"rate": -24'))
+        invoke("plan", paths, "expected a positive frame rate")
+    # The request's rate is a number from 1 to 240 per second, whole or not.
+    invoke("plan", files(directory, one, one,
+                         request(0, 0, [("n", 0, None)], fps=0.5)),
+           "fps must be between 1 and 240")
+    # A frame count is still an exact integer, whatever the rate is.
+    shifted = timeline([clip(a, 1, 4, 24)])
+    paths = files(directory, shifted, shifted, request(0, 0, [("n", 1, None)]))
+    paths[1].write_text(json.dumps(shifted).replace('"value": 1, ', '"value": 1.5, ', 1))
     invoke("plan", paths, "expected a nonnegative exact integer")
     checked.append("frame rates that are not whole numbers")
 
@@ -1418,7 +1460,7 @@ SAMPLES = {
 EFFECTS = "effects and retiming are outside the supported format"
 MUTED = "expected an enabled OTIO item"
 TRIMMED = "source_range trims a containing track or stack"
-MIXED = "RationalTime rate 15 differs from the request's 30 fps"
+MIXED = "RationalTime rate 15.0 differs from the request's 30 fps"
 READ = "read"
 # What the tool makes of every track of every sample: read at a frame rate,
 # or refused with these words. The numbers are not a target in themselves;
@@ -1621,7 +1663,7 @@ def main():
               f"{verify_beyond_enumeration(work, opentimelineio)} (pieces)")
         print("The command's own failures, each message checked whole: "
               f"{verify_command(work)} groups")
-        print("Corners: empty cuts, blank and endless notes, a closed pipe, 29.97 fps, children without "
+        print("Corners: empty cuts, blank and endless notes, a closed pipe, rates that are not whole, children without "
               f"footage, numbers, names and structure kept as written: "
               f"{verify_corners(work, opentimelineio)} groups")
         print("Audio tracks, picture and sound side by side, two rounds: "

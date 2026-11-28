@@ -268,7 +268,7 @@ fn cut_starting_at(token : String, value : Double) -> Json {
 /// is read to begin at that frame, or the words it was refused with.
 pub fn read_as(token : String) -> Result[Int64, String] raise {
   let document = cut_starting_at(token, approximate(token))
-  let outcome = Ok(@tool.read_otio(document, track_index=0, fps=24)) catch {
+  let outcome = Ok(@tool.read_otio(document, track_index=0, fps=@tool.Rate::whole(24))) catch {
     error => Err(error)
   }
   let timeline = match outcome {

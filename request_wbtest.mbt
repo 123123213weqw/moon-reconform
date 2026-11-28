@@ -78,7 +78,7 @@ test "request keeps the documented shapes" {
     }),
   ])
   let parsed = read_request(Json::object(request))
-  assert_eq(parsed.fps, 24)
+  assert_eq(parsed.fps, Rate::whole(24))
   assert_eq(parsed.notes.length(), 2)
   // An omitted stop is one frame; an explicit stop is exclusive.
   assert_eq(parsed.notes[0].range.stop, 5L)

@@ -1,7 +1,7 @@
 ///|
 #derive(Eq, Debug)
 pub(all) struct Request {
-  fps : Int32
+  fps : Rate
   old_track : Int32
   new_track : Int32
   notes : Array[Note]
@@ -56,7 +56,7 @@ pub fn read_request(value : Json) -> Request raise ReconformError {
     ["fps", "old_track", "new_track", "notes", "selections", "from_markers"],
     "request",
   )
-  let fps = index_field(fields, "fps", "request")
+  let fps = exact_rate(required(fields, "fps", "request"), "request.fps")
   let old_track = index_field(fields, "old_track", "request")
   let new_track = index_field(fields, "new_track", "request")
   let from_markers = match fields.get("from_markers") {

@@ -11,9 +11,9 @@ pub fn carried(Array[NoteReport], Resolution) -> Array[Note]
 
 pub fn plan(Timeline, Timeline, Array[Note]) -> Array[NoteReport] raise ReconformError
 
-pub fn read_notes_from_markers(@json.Json, track_index~ : Int32, fps~ : Int32) -> Array[Note] raise ReconformError
+pub fn read_notes_from_markers(@json.Json, track_index~ : Int32, fps~ : Rate) -> Array[Note] raise ReconformError
 
-pub fn read_otio(@json.Json, track_index~ : Int32, fps~ : Int32) -> Timeline raise ReconformError
+pub fn read_otio(@json.Json, track_index~ : Int32, fps~ : Rate) -> Timeline raise ReconformError
 
 pub fn read_request(@json.Json) -> Request raise ReconformError
 
@@ -21,7 +21,7 @@ pub fn report_json(Timeline, Timeline, Array[NoteReport], Resolution) -> @json.J
 
 pub fn resolve(Array[NoteReport], Array[Selection]) -> Resolution raise ReconformError
 
-pub fn with_markers(@json.Json, track_index~ : Int32, fps~ : Int32, Resolution) -> @json.Json raise ReconformError
+pub fn with_markers(@json.Json, track_index~ : Int32, fps~ : Rate, Resolution) -> @json.Json raise ReconformError
 
 // Errors
 pub(all) suberror ReconformError {
@@ -72,8 +72,16 @@ pub(all) struct Placement {
 }
 
 #derive(Eq, @debug.Debug)
+pub(all) struct Rate {
+  value : Double
+  token : String
+}
+pub fn Rate::same(Self, Self) -> Bool
+pub fn Rate::whole(Int32) -> Self
+
+#derive(Eq, @debug.Debug)
 pub(all) struct Request {
-  fps : Int32
+  fps : Rate
   old_track : Int32
   new_track : Int32
   notes : Array[Note]

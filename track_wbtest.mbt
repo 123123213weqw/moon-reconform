@@ -1,6 +1,6 @@
 ///|
 test "an Audio track is a line of cuts like a Video track; other kinds are not" {
-  let rate = 24
+  let rate = Rate::whole(24)
   let sound = "file:///shoot/A.wav"
   let old_cut = j_timeline(
     j_kind("Audio", [j_clip(sound, 40L, 8L, rate), j_gap(1L, rate)], []),
@@ -115,7 +115,7 @@ fn j_media(url : String, first : Int64, length : Int64) -> Json {
     "name": Json(""),
     "metadata": j_empty(),
     "target_url": Json(url),
-    "available_range": j_range(first, length, 24),
+    "available_range": j_range(first, length, Rate::whole(24)),
   })
 }
 
@@ -140,7 +140,7 @@ fn j_take(reference : Json, source : Json?) -> Json {
 
 ///|
 fn j_message(document : Json) -> String {
-  let outcome = Ok(read_otio(document, track_index=0, fps=24)) catch {
+  let outcome = Ok(read_otio(document, track_index=0, fps=Rate::whole(24))) catch {
     error => Err(error)
   }
   match outcome {
@@ -152,7 +152,7 @@ fn j_message(document : Json) -> String {
 
 ///|
 test "a clip may use its media's range, and a name is matched byte for byte" {
-  let rate = 24
+  let rate = Rate::whole(24)
   let url = "file:///shoot/A.mov"
 
   // A clip without a source range uses as much of its media as there is:

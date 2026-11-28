@@ -17,9 +17,9 @@
 pub fn read_notes_from_markers(
   root : Json,
   track_index~ : Int32,
-  fps~ : Int32,
+  fps~ : Rate,
 ) -> Array[Note] raise ReconformError {
-  check_fps(fps)
+  check_rate(fps)
   let track = otio_track(root, track_index)
   let notes = []
   let seen : Map[(String, Int32), Int32] = Map([])

@@ -431,7 +431,11 @@ pub fn origin_key(marker : Json) -> (String, Int32)? {
 ///|
 /// The marker the tool must write for a transfer, placed where the oracle
 /// reads the placement to lie.
-fn marker_for(transfer : @tool.Transfer, fresh : Array[Slot]) -> Json {
+fn marker_for(
+  transfer : @tool.Transfer,
+  fresh : Array[Slot],
+  rate~ : @tool.Rate = @tool.Rate::whole(24),
+) -> Json {
   let placement = transfer.placement
   let slot = fresh[placement.clip.to_int()]
   let first = slot.first.unwrap() + placement.range.start - slot.from
@@ -441,7 +445,7 @@ fn marker_for(transfer : @tool.Transfer, fresh : Array[Slot]) -> Json {
     "name": Json(transfer.text),
     "comment": Json(""),
     "color": Json("GREEN"),
-    "marked_range": duration(placement.range.start, length),
+    "marked_range": duration(placement.range.start, length, rate~),
     "metadata": Json::object({
       "moon_reconform": Json::object({
         "note_id": Json(transfer.note_id),
@@ -464,6 +468,7 @@ pub fn exported(
   new_track : Int32,
   resolution : @tool.Resolution,
   laid : Array[Slot],
+  rate~ : @tool.Rate = @tool.Rate::whole(24),
 ) -> Json {
   // Nothing transfers, so the document is handed back as it came: without
   // so much as an empty list of markers on a track that listed none.
@@ -487,7 +492,7 @@ pub fn exported(
     markers.push(marker)
   }
   for transfer in resolution.transfers {
-    markers.push(marker_for(transfer, laid))
+    markers.push(marker_for(transfer, laid, rate~))
   }
   with_markers_on(fresh, new_track, markers)
 }

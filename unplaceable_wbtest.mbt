@@ -10,7 +10,7 @@ fn j_offline(schema : String, start : Int64, duration : Int64) -> Json {
       "metadata": j_empty(),
     }),
     "metadata": j_empty(),
-    "source_range": j_range(start, duration, 24),
+    "source_range": j_range(start, duration, Rate::whole(24)),
     "markers": Json::array([]),
     "effects": Json::array([]),
     "enabled": Json::boolean(true),
@@ -25,8 +25,8 @@ fn j_transition(entering : Int64, leaving : Int64) -> Json {
     "metadata": j_empty(),
     "transition_type": Json("SMPTE_Dissolve"),
     "parameters": j_empty(),
-    "in_offset": j_rt(entering, 24),
-    "out_offset": j_rt(leaving, 24),
+    "in_offset": j_rt(entering, Rate::whole(24)),
+    "out_offset": j_rt(leaving, Rate::whole(24)),
     "enabled": Json::boolean(true),
     "effects": Json::array([]),
   })
@@ -39,7 +39,7 @@ fn j_nested(duration : Int64) -> Json {
     "OTIO_SCHEMA": Json("Stack.1"),
     "name": Json("sub-sequence"),
     "metadata": j_empty(),
-    "source_range": j_range(0L, duration, 24),
+    "source_range": j_range(0L, duration, Rate::whole(24)),
     "children": Json::array([]),
     "markers": Json::array([]),
     "effects": Json::array([]),
@@ -92,7 +92,7 @@ fn j_kinds(report : NoteReport) -> Array[String] {
 
 ///|
 test "children that hold no footage are reported where they are, not refused" {
-  let rate = 24
+  let rate = Rate::whole(24)
   let url = "file:///shoot/A.mov"
   // Four frames of A, then a clip whose media is missing, a transition of
   // two frames into the next clip and three out of the last, four frames

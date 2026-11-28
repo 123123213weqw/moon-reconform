@@ -120,8 +120,15 @@ fn frame_count(value : Json) -> Int64? {
 
 ///|
 /// A small number drawn evenly from `0` up to `count`, not counting it.
+/// Nothing to draw from is zero: a mutated frame count can come out too
+/// large for an `Int`, and a caller that then divides it into a place and a
+/// rest should not have to have thought of it.
 fn among(count : Int, state : @splitmix.RandomState) -> Int {
-  draw(count.reinterpret_as_uint(), state).to_int()
+  if count <= 0 {
+    0
+  } else {
+    draw(count.reinterpret_as_uint(), state).to_int()
+  }
 }
 
 ///|

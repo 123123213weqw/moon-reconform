@@ -1,6 +1,6 @@
 ///|
 fn refusal_of(document : Json, none : Resolution) -> String {
-  let outcome = Ok(with_markers(document, track_index=0, fps=24, none)) catch {
+  let outcome = Ok(with_markers(document, track_index=0, fps=Rate::whole(24), none)) catch {
     error => Err(error)
   }
   match outcome {
@@ -12,7 +12,7 @@ fn refusal_of(document : Json, none : Resolution) -> String {
 
 ///|
 fn no_transfers(document : Json) -> Resolution raise ReconformError {
-  let cut = read_otio(document, track_index=0, fps=24)
+  let cut = read_otio(document, track_index=0, fps=Rate::whole(24))
   resolve(plan(cut, cut, []), [])
 }
 
@@ -25,7 +25,7 @@ fn j_with_metadata(document : Json, value : Json) -> Json raise ReconformError {
 
 ///|
 test "a number no double can hold is refused before it can be written back" {
-  let cut = j_timeline(j_track([j_clip("file:///shoot/A.mov", 0L, 4L, 24)], []))
+  let cut = j_timeline(j_track([j_clip("file:///shoot/A.mov", 0L, 4L, Rate::whole(24))], []))
   let none = no_transfers(cut)
   // The text 1e309 is a JSON number and not a double. Read as infinity, the
   // only thing the codec can write back is Inf: the text said something

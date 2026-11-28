@@ -45,21 +45,25 @@ pub fn nothing() -> Json {
 }
 
 ///|
-fn instant(value : Int64) -> Json {
+fn instant(value : Int64, rate~ : @tool.Rate = @tool.Rate::whole(24)) -> Json {
   Json::object({
     "OTIO_SCHEMA": Json("RationalTime.1"),
     "value": frame(value),
-    "rate": Json(24),
+    "rate": Json::number(rate.value, repr=rate.token),
   })
 }
 
 ///|
 /// An OpenTimelineIO time range: where it starts and how long it is.
-pub fn duration(start : Int64, length : Int64) -> Json {
+pub fn duration(
+  start : Int64,
+  length : Int64,
+  rate~ : @tool.Rate = @tool.Rate::whole(24),
+) -> Json {
   Json::object({
     "OTIO_SCHEMA": Json("TimeRange.1"),
-    "start_time": instant(start),
-    "duration": instant(length),
+    "start_time": instant(start, rate~),
+    "duration": instant(length, rate~),
   })
 }
 
@@ -88,7 +92,12 @@ pub let media_keys : ReadOnlyArray[String] = [
 ]
 
 ///|
-fn footage_clip(url : String, start : Int64, length : Int64) -> Json {
+fn footage_clip(
+  url : String,
+  start : Int64,
+  length : Int64,
+  rate~ : @tool.Rate = @tool.Rate::whole(24),
+) -> Json {
   Json::object({
     "OTIO_SCHEMA": Json("Clip.2"),
     "name": Json(url),
@@ -98,12 +107,12 @@ fn footage_clip(url : String, start : Int64, length : Int64) -> Json {
         "name": Json(""),
         "metadata": nothing(),
         "target_url": Json(url),
-        "available_range": duration(0L, 4000L),
+        "available_range": duration(0L, 4000L, rate~),
       }),
     }),
     "active_media_reference_key": Json("original"),
     "metadata": nothing(),
-    "source_range": duration(start, length),
+    "source_range": duration(start, length, rate~),
     "markers": Json::array([]),
     "effects": Json::array([]),
     "enabled": Json(true),
@@ -113,7 +122,12 @@ fn footage_clip(url : String, start : Int64, length : Int64) -> Json {
 ///|
 /// A clip whose media has no location of its own: missing, made by the
 /// application, or not named at all.
-fn offline_clip(start : Int64, length : Int64, which : Int32) -> Json {
+fn offline_clip(
+  start : Int64,
+  length : Int64,
+  which : Int32,
+  rate~ : @tool.Rate = @tool.Rate::whole(24),
+) -> Json {
   let reference = match which & 3 {
     0 => Json::null()
     1 =>
@@ -142,7 +156,7 @@ fn offline_clip(start : Int64, length : Int64, which : Int32) -> Json {
     "name": Json("no footage of its own"),
     "media_reference": reference,
     "metadata": nothing(),
-    "source_range": duration(start, length),
+    "source_range": duration(start, length, rate~),
     "markers": Json::array([]),
     "effects": Json::array([]),
     "enabled": Json(true),
@@ -152,7 +166,11 @@ fn offline_clip(start : Int64, length : Int64, which : Int32) -> Json {
 ///|
 /// The document for one generated child, or None when its length came out
 /// zero, in which case it is not on the track at all.
-pub fn child_of(child : Child, far~ : Int64 = 0L) -> Json? {
+pub fn child_of(
+  child : Child,
+  far~ : Int64 = 0L,
+  rate~ : @tool.Rate = @tool.Rate::whole(24),
+) -> Json? {
   // Between one and seven frames; a length that comes out zero leaves the
   // child out, which is also what a shrunk case asks for. `far` moves the
   // footage itself far from its first frame.
@@ -168,13 +186,13 @@ pub fn child_of(child : Child, far~ : Int64 = 0L) -> Json? {
           "OTIO_SCHEMA": Json("Gap.1"),
           "name": Json(""),
           "metadata": nothing(),
-          "source_range": duration(0L, length),
+          "source_range": duration(0L, length, rate~),
           "markers": Json::array([]),
           "effects": Json::array([]),
           "enabled": Json(true),
         }),
       )
-    2 => Some(offline_clip(start, length, child.media))
+    2 => Some(offline_clip(start, length, child.media, rate~))
     3 => {
       // A transition lasts its two offsets; here they add up to its length.
       let entering = (child.entering.to_int64() & 7L) % length
@@ -185,8 +203,8 @@ pub fn child_of(child : Child, far~ : Int64 = 0L) -> Json? {
           "metadata": nothing(),
           "transition_type": Json("SMPTE_Dissolve"),
           "parameters": nothing(),
-          "in_offset": instant(entering),
-          "out_offset": instant(length - entering),
+          "in_offset": instant(entering, rate~),
+          "out_offset": instant(length - entering, rate~),
         }),
       )
     }
@@ -196,25 +214,31 @@ pub fn child_of(child : Child, far~ : Int64 = 0L) -> Json? {
           "OTIO_SCHEMA": Json("Stack.1"),
           "name": Json("sub-sequence"),
           "metadata": nothing(),
-          "source_range": duration(0L, length),
+          "source_range": duration(0L, length, rate~),
           "children": Json::array([]),
           "markers": Json::array([]),
           "effects": Json::array([]),
           "enabled": Json(true),
         }),
       )
-    _ => Some(footage_clip(media_keys[(child.media & 3).to_int()], start, length))
+    _ =>
+      Some(
+        footage_clip(media_keys[(child.media & 3).to_int()], start, length, rate~),
+      )
   }
 }
 
 ///|
 /// Black, as long as asked.
-pub fn black(length : Int64) -> Json {
+pub fn black(
+  length : Int64,
+  rate~ : @tool.Rate = @tool.Rate::whole(24),
+) -> Json {
   Json::object({
     "OTIO_SCHEMA": Json("Gap.1"),
     "name": Json(""),
     "metadata": nothing(),
-    "source_range": duration(0L, length),
+    "source_range": duration(0L, length, rate~),
     "markers": Json::array([]),
     "effects": Json::array([]),
     "enabled": Json(true),
@@ -246,13 +270,14 @@ pub fn track_of(
   markers : Array[Json],
   far~ : Int64 = 0L,
   lead~ : Int64 = 0L,
+  rate~ : @tool.Rate = @tool.Rate::whole(24),
 ) -> Json {
   let laid = []
   if lead > 0L {
-    laid.push(black(lead))
+    laid.push(black(lead, rate~))
   }
   for child in children {
-    match child_of(child, far~) {
+    match child_of(child, far~, rate~) {
       Some(one) => laid.push(one)
       None => ()
     }
@@ -273,7 +298,11 @@ pub fn track_of(
 ///|
 /// A sequence of one or two tracks. The second is always of the other kind
 /// than the first, so that choosing a track is a real choice.
-pub fn sequence(first : Json, second : Json?) -> Json {
+pub fn sequence(
+  first : Json,
+  second : Json?,
+  rate~ : @tool.Rate = @tool.Rate::whole(24),
+) -> Json {
   let tracks = [first]
   match second {
     Some(one) => tracks.push(one)
@@ -283,7 +312,7 @@ pub fn sequence(first : Json, second : Json?) -> Json {
     "OTIO_SCHEMA": Json("Timeline.1"),
     "name": Json("Generated"),
     "metadata": nothing(),
-    "global_start_time": instant(0L),
+    "global_start_time": instant(0L, rate~),
     "tracks": Json::object({
       "OTIO_SCHEMA": Json("Stack.1"),
       "name": Json("tracks"),
@@ -298,13 +327,18 @@ pub fn sequence(first : Json, second : Json?) -> Json {
 
 ///|
 /// A marker of the editor's own: nothing in it says it came from this tool.
-pub fn own_marker(name : String, at : Int64, length : Int64) -> Json {
+pub fn own_marker(
+  name : String,
+  at : Int64,
+  length : Int64,
+  rate~ : @tool.Rate = @tool.Rate::whole(24),
+) -> Json {
   Json::object({
     "OTIO_SCHEMA": Json("Marker.2"),
     "name": Json(name),
     "comment": Json(""),
     "color": Json("RED"),
-    "marked_range": duration(at, length),
+    "marked_range": duration(at, length, rate~),
     "metadata": nothing(),
   })
 }

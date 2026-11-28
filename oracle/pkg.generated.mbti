@@ -15,15 +15,15 @@ pub fn anything(Int32, @splitmix.RandomState) -> @json.Json
 
 pub fn approximate(String) -> Double
 
-pub fn black(Int64) -> @json.Json
+pub fn black(Int64, rate? : @moon_reconform.Rate) -> @json.Json
 
 pub fn checked(@json.Json, @json.Json, @json.Json) -> Unit raise
 
-pub fn child_of(Child, far? : Int64) -> @json.Json?
+pub fn child_of(Child, far? : Int64, rate? : @moon_reconform.Rate) -> @json.Json?
 
 pub fn copied(@json.Json) -> @json.Json
 
-pub fn duration(Int64, Int64) -> @json.Json
+pub fn duration(Int64, Int64, rate? : @moon_reconform.Rate) -> @json.Json
 
 pub fn duration_of(Array[Slot]) -> Int64
 
@@ -33,7 +33,7 @@ pub fn entry(@json.Json, String) -> @json.Json
 
 pub fn expected(Array[@moon_reconform.NoteReport], Array[@moon_reconform.Selection]) -> (@moon_reconform.Resolution, Array[@moon_reconform.Note])
 
-pub fn exported(@json.Json, Int32, @moon_reconform.Resolution, Array[Slot]) -> @json.Json
+pub fn exported(@json.Json, Int32, @moon_reconform.Resolution, Array[Slot], rate? : @moon_reconform.Rate) -> @json.Json
 
 pub let far_away : Int64
 
@@ -59,11 +59,13 @@ pub fn nothing() -> @json.Json
 
 pub fn origin_key(@json.Json) -> (String, Int32)?
 
-pub fn own_marker(String, Int64, Int64) -> @json.Json
+pub fn own_marker(String, Int64, Int64, rate? : @moon_reconform.Rate) -> @json.Json
 
 pub fn plain_track(Array[@json.Json]) -> @json.Json
 
 pub fn planned(Array[Slot], Array[Slot], @moon_reconform.Note) -> Array[@moon_reconform.Piece]
+
+pub fn rate_of(Case) -> @moon_reconform.Rate
 
 pub fn read_as(String) -> Result[Int64, String] raise
 
@@ -77,7 +79,7 @@ pub fn sample(UInt64, size? : Int32) -> Case
 
 pub fn self_mapped(Cut, Array[Mark], far? : Int64) -> Unit raise
 
-pub fn sequence(@json.Json, @json.Json?) -> @json.Json
+pub fn sequence(@json.Json, @json.Json?, rate? : @moon_reconform.Rate) -> @json.Json
 
 pub fn shown_documents(Array[@json.Json]) -> String
 
@@ -87,7 +89,7 @@ pub fn span(Int64, Int64) -> @json.Json
 
 pub fn text(@json.Json) -> String
 
-pub fn track_of(Array[Child], Bool, Array[@json.Json], far? : Int64, lead? : Int64) -> @json.Json
+pub fn track_of(Array[Child], Bool, Array[@json.Json], far? : Int64, lead? : Int64, rate? : @moon_reconform.Rate) -> @json.Json
 
 pub fn track_of_document(@json.Json, Int32) -> @json.Json
 

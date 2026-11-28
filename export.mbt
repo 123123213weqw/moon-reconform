@@ -1,9 +1,9 @@
 ///|
-fn time_json(value : Int64, fps : Int32) -> Json {
+fn time_json(value : Int64, fps : Rate) -> Json {
   Json::object({
     "OTIO_SCHEMA": Json("RationalTime.1"),
     "value": frame_json(value),
-    "rate": Json(fps),
+    "rate": Json::number(fps.value, repr=fps.token),
   })
 }
 
@@ -16,7 +16,7 @@ fn marker_json(
   transfer : Transfer,
   media : String,
   source : Span,
-  fps : Int32,
+  fps : Rate,
 ) -> Json {
   let span = transfer.placement.range
   Json::object({
@@ -108,7 +108,7 @@ fn check_numbers(root : Json) -> Unit raise ReconformError {
 pub fn with_markers(
   root : Json,
   track_index~ : Int32,
-  fps~ : Int32,
+  fps~ : Rate,
   resolution : Resolution,
 ) -> Json raise ReconformError {
   check_numbers(root)

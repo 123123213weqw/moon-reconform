@@ -119,41 +119,19 @@ fn integral_token(token : String, is_zero~ : Bool) -> Bool {
 ///|
 fn exact_time(
   value : Json,
-  fps : Int32,
+  fps : Rate,
   context : String,
 ) -> Int64 raise ReconformError {
   let fields = object(value, context)
   expect_schema(fields, "RationalTime.1", context)
-  // A rate that is not a whole number is what 23.976 and 29.97 footage
-  // looks like. That is the commonest reason to be refused, and it
-  // deserves more than being called a bad integer.
-  match required(fields, "rate", context) {
-    Number(n, repr~) if n > 0.0 && n < 1000000.0 && n != n.floor() => raise Invalid(
-        context +
-        ".rate: the frame rate " +
-        repr.unwrap_or(n.to_string()) +
-        " is not a whole number of frames per second. Cuts at rates such as 23.976 and 29.97 are not supported.",
-      )
-    _ => ()
-  }
-  let rate = exact_integer(required(fields, "rate", context), context + ".rate")
-  if rate != fps.to_int64() {
-    raise Invalid(
-      context +
-      ": RationalTime rate " +
-      rate.to_string() +
-      " differs from the request's " +
-      fps.to_string() +
-      " fps. Every time in a cut has to be at one whole-number frame rate. An export that gives a clip's footage at the rate of its own media, as 15 fps footage in a 30 fps sequence, mixes rates and is not supported.",
-    )
-  }
+  check_rate_field(required(fields, "rate", context), fps, context)
   exact_integer(required(fields, "value", context), context + ".value")
 }
 
 ///|
 fn source_range(
   value : Json,
-  fps : Int32,
+  fps : Rate,
   context : String,
 ) -> Span raise ReconformError {
   let fields = object(value, context)
@@ -268,8 +246,8 @@ fn media_value(
 }
 
 ///|
-fn check_fps(fps : Int32) -> Unit raise ReconformError {
-  if fps <= 0 || fps > 240 {
+fn check_rate(fps : Rate) -> Unit raise ReconformError {
+  if !(fps.value >= 1.0 && fps.value <= 240.0) {
     raise Invalid("fps must be between 1 and 240")
   }
 }
@@ -279,9 +257,9 @@ fn check_fps(fps : Int32) -> Unit raise ReconformError {
 pub fn read_otio(
   root : Json,
   track_index~ : Int32,
-  fps~ : Int32,
+  fps~ : Rate,
 ) -> Timeline raise ReconformError {
-  check_fps(fps)
+  check_rate(fps)
   let track = otio_track(root, track_index)
   let children = array(
     required(track, "children", "selected track"),

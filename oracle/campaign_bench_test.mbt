@@ -36,7 +36,7 @@ test "a cut of 20,000 children read from its document" (b : @bench.T) {
   let document = @oracle.sequence(@oracle.plain_track(children), None)
   b.bench(fn() {
     try {
-      ignore(@tool.read_otio(document, track_index=0, fps=24))
+      ignore(@tool.read_otio(document, track_index=0, fps=@tool.Rate::whole(24)))
     } catch {
       _ => ()
     }
@@ -58,7 +58,7 @@ test "a thousand annotations planned against 20,000 children" (b : @bench.T) {
     )
   }
   let document = @oracle.sequence(@oracle.plain_track(children), None)
-  let cut = @tool.read_otio(document, track_index=0, fps=24)
+  let cut = @tool.read_otio(document, track_index=0, fps=@tool.Rate::whole(24))
   let notes = []
   for k = 0; k < 1000; k = k + 1 {
     notes.push(
