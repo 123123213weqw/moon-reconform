@@ -1,0 +1,40 @@
+///|
+/// The first range is over before the second begins, or the other way
+/// round.
+predicate ends_first(a_stop : Int64, b_start : Int64, b_stop : Int64, a_start : Int64) {
+  a_stop <= b_start || b_stop <= a_start
+}
+
+///|
+/// A range holds a frame: it is not empty.
+predicate holds_a_frame(span : Span) {
+  span.start < span.stop
+}
+
+///|
+/// What the intersection of two ranges is: where they overlap, a range
+/// inside both and not empty; where they do not, none.
+predicate intersection_ok(a : Span, b : Span, result : Option[Span]) {
+  match result {
+    None => ends_first(a.stop, b.start, b.stop, a.start)
+    Some(span) =>
+      holds_a_frame(span) &&
+      a.start <= span.start &&
+      b.start <= span.start &&
+      span.stop <= a.stop &&
+      span.stop <= b.stop
+  }
+}
+
+///|
+/// Two frame counts added exactly while the sum can still be named.
+predicate summed_ok(a : Int64, b : Int64, result : Option[Int64]) {
+  match result {
+    None => (a < 0L) || (b < 0L) || (9007199254740991L < a + b)
+    Some(total) =>
+      (0L <= a) &&
+      (0L <= b) &&
+      (total == a + b) &&
+      (total <= 9007199254740991L)
+  }
+}

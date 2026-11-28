@@ -22,9 +22,3 @@ fn target() -> String {
 fn target() -> String {
   "native"
 }
-
-///|
-#cfg(target = "llvm")
-fn target() -> String {
-  "llvm"
-}

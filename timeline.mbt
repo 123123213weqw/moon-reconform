@@ -81,7 +81,9 @@ pub fn Timeline::from_shots(
 }
 
 ///|
-pub fn Timeline::duration(self : Timeline) -> Int64 {
+pub fn Timeline::duration(self : Timeline) -> Int64 where {
+  proof_ensure: result => result == self.length_frames,
+} {
   self.length_frames
 }
 
@@ -96,12 +98,13 @@ fn Timeline::first_shot(self : Timeline, start : Int64) -> Int {
 }
 
 ///|
-fn intersection(a : Span, b : Span) -> Span? {
-  let start = if a.start > b.start { a.start } else { b.start }
-  let stop = if a.stop < b.stop { a.stop } else { b.stop }
-  if start < stop {
-    Some({ start, stop, })
-  } else {
-    None
+fn intersection(a : Span, b : Span) -> Span? where {
+  proof_require: holds_a_frame(a),
+  proof_require: holds_a_frame(b),
+  proof_ensure: result => intersection_ok(a, b, result),
+} {
+  match @spans.intersection(a.start, a.stop, b.start, b.stop) {
+    Some((start, stop)) => Some({ start, stop, })
+    None => None
   }
 }

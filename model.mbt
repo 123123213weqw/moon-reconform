@@ -117,14 +117,24 @@ fn Span::checked(self : Span, context : String) -> Unit raise ReconformError {
 }
 
 ///|
+fn sum_of(a : Int64, b : Int64) -> Int64? where {
+  proof_require: 0L <= a && 0L <= b,
+  proof_ensure: result => summed_ok(a, b, result),
+} {
+  @spans.summed(a, b)
+}
+
+///|
 fn add_frames(a : Int64, b : Int64) -> Int64 raise ReconformError {
-  match @spans.summed(a, b) {
+  match sum_of(a, b) {
     Some(total) => total
     None => raise Limit("timeline exceeds exact frame range")
   }
 }
 
 ///|
-pub fn Span::length(self : Span) -> Int64 {
+pub fn Span::length(self : Span) -> Int64 where {
+  proof_ensure: result => result == self.stop - self.start,
+} {
   self.stop - self.start
 }
